@@ -11,12 +11,12 @@ set -e
 # 配置参数（支持环境变量覆盖）
 DOMAIN="${DOMAIN:-}"
 WILDCARD_DOMAIN="${WILDCARD_DOMAIN:-}"
-CERT_PATH="${CERT_PATH:-/root/ssl/cert.pem}"
-KEY_PATH="${KEY_PATH:-/root/ssl/private.key}"
+CERT_PATH="${CERT_PATH:-}"
+KEY_PATH="${KEY_PATH:-}"
 EMAIL="${EMAIL:-}"
 
 # DNS 提供商配置
-DNS_PROVIDER="${DNS_PROVIDER:-luadns}"  # luadns 或 he
+DNS_PROVIDER="${DNS_PROVIDER:-}"  # luadns 或 he
 LUA_KEY="${LUA_KEY:-}"
 LUA_EMAIL="${LUA_EMAIL:-}"
 HE_USERNAME="${HE_USERNAME:-}"
