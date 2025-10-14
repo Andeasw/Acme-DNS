@@ -11,21 +11,6 @@ Run these commands directly in your VPS SSH terminal to download, authorize, and
 bash <(curl -fsSL https://raw.githubusercontent.com/Andeasw/Acme-DNS/main/Acme-DNS.sh)
 ```
 
-# Manual Download & Launch
-```
-\# Download the raw script from GitHub (avoids HTML blob files)
-
-wget https://raw.githubusercontent.com/Andeasw/Acme-DNS/main/Acme-DNS.sh -O Acme-DNS.sh
-
-\# Grant executable permission
-
-chmod +x Acme-DNS.sh
-
-\# Launch interactive mode (recommended for first use)
-
-./Acme-DNS.sh
-```
-
 ## Features
 
 ### 🔐 Automatic SSL Certificate Management
