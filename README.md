@@ -32,7 +32,7 @@ chmod +x Acme-DNS.sh
 
 * Wildcard certificate support (`*.``example.com`)
 
-* Multiple DNS providers (LuaDNS, Hurricane Electric)
+* Dual DNS providers (LuaDNS, Hurricane Electric)
 
 * Dual ACME server support (Let's Encrypt, ZeroSSL)
 
