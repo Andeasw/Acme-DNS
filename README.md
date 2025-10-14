@@ -274,5 +274,3 @@ The script’s interactive menu includes these features:
 ## License
 
 This project is open-source. Feel free to use, modify, and distribute it as needed.
-
-> （注：文档部分内容可能由 AI 生成）
