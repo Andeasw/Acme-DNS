@@ -30,7 +30,7 @@ chmod +x Acme-DNS.sh
 
 * Certificate issuance and renewal
 
-* Wildcard certificate support (`*.``example.com`)
+* Wildcard certificate support (`*.example.com`)
 
 * Dual DNS providers (LuaDNS, Hurricane Electric)
 
