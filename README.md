@@ -6,8 +6,12 @@ A powerful and user-friendly bash script for managing SSL certificates via `acme
 
 Run these commands directly in your VPS SSH terminal to download, authorize, and launch the script (works for Debian/Ubuntu/Alpine):
 
+# One-Click Launch (Recommended)
+```
+bash <(curl -fsSL https://raw.githubusercontent.com/Andeasw/Acme-DNS/main/Acme-DNS.sh)
+```
 
-
+# Manual Download & Launch
 ```
 \# Download the raw script from GitHub (avoids HTML blob files)
 
