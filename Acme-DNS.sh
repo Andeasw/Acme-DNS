@@ -1,9 +1,9 @@
 #!/bin/bash
 # ===========================================
-# RSA 2048 证书管理脚本 (acme.sh + LuaDNS/Hurricane Electric)
-# 支持 Debian 和 Alpine 系统
+# RSA 2048 证书管理脚本 (acme.sh + CloudFlare/LuaDNS/Hurricane Electric)
+# 支持 Debian、Alpine 和 FreeBSD 系统
 # 支持证书申请、续期、管理和卸载
-# By Prince
+# By Prince 2025.10.15
 # ===========================================
 
 set -e
@@ -16,9 +16,20 @@ KEY_PATH="${KEY_PATH:-}"
 EMAIL="${EMAIL:-}"
 
 # DNS 提供商配置
-DNS_PROVIDER="${DNS_PROVIDER:-}"  # luadns 或 he
+DNS_PROVIDER="${DNS_PROVIDER:-}"  # cloudflare, luadns 或 he
+
+# CloudFlare 配置
+CF_Token="${CF_Token:-}"
+CF_Zone_ID="${CF_Zone_ID:-}"
+CF_Account_ID="${CF_Account_ID:-}"
+CF_Key="${CF_Key:-}"  # 不推荐全局 API Key
+CF_Email="${CF_Email:-}"  # 不推荐邮箱
+
+# LuaDNS 配置
 LUA_KEY="${LUA_KEY:-}"
 LUA_EMAIL="${LUA_EMAIL:-}"
+
+# Hurricane Electric 配置
 HE_USERNAME="${HE_USERNAME:-}"
 HE_PASSWORD="${HE_PASSWORD:-}"
 
@@ -32,6 +43,8 @@ POST_SCRIPT_ENABLED="${POST_SCRIPT_ENABLED:-false}"
 # 系统检测
 OS_TYPE=""
 PKG_MANAGER=""
+PKG_INSTALL=""
+PKG_UPDATE=""
 ACME_HOME="$HOME/.acme.sh"
 
 # 颜色输出
@@ -51,6 +64,21 @@ success() { echo -e "${GREEN}[成功] $1${NC}" >&2; }
 fatal() { echo -e "${RED}[致命错误] $1${NC}" >&2; exit 1; }
 step() { echo -e "${CYAN}[步骤] $1${NC}" >&2; }
 
+# 进度指示器
+spinner() {
+    local pid=$!
+    local delay=0.1
+    local spinstr='|/-\'
+    while [ "$(ps a | awk '{print $1}' | grep $pid)" ]; do
+        local temp=${spinstr#?}
+        printf " [%c]  " "$spinstr"
+        local spinstr=$temp${spinstr%"$temp"}
+        sleep $delay
+        printf "\b\b\b\b\b\b"
+    done
+    printf "    \b\b\b\b"
+}
+
 # 分隔线
 separator() {
     echo -e "${CYAN}==================================================${NC}"
@@ -65,19 +93,159 @@ title() {
     echo
 }
 
-# 检测操作系统
+# 检测操作系统和包管理器
 detect_os() {
+    step "检测操作系统和包管理器..."
+    
     if [ -f /etc/alpine-release ]; then
         OS_TYPE="alpine"
         PKG_MANAGER="apk"
+        PKG_INSTALL="apk add --no-cache"
+        PKG_UPDATE="apk update"
     elif [ -f /etc/debian_version ]; then
         OS_TYPE="debian"
         PKG_MANAGER="apt-get"
+        PKG_INSTALL="apt-get install -y"
+        PKG_UPDATE="apt-get update"
+    elif [ -f /etc/freebsd-update.conf ]; then
+        OS_TYPE="freebsd"
+        PKG_MANAGER="pkg"
+        PKG_INSTALL="pkg install -y"
+        PKG_UPDATE="pkg update"
     else
         OS_TYPE="unknown"
         warn "未知操作系统，尝试继续运行..."
+        # 尝试检测可用的包管理器
+        if command -v apt-get >/dev/null 2>&1; then
+            PKG_MANAGER="apt-get"
+            PKG_INSTALL="apt-get install -y"
+            PKG_UPDATE="apt-get update"
+        elif command -v apk >/dev/null 2>&1; then
+            PKG_MANAGER="apk"
+            PKG_INSTALL="apk add --no-cache"
+            PKG_UPDATE="apk update"
+        elif command -v pkg >/dev/null 2>&1; then
+            PKG_MANAGER="pkg"
+            PKG_INSTALL="pkg install -y"
+            PKG_UPDATE="pkg update"
+        elif command -v yum >/dev/null 2>&1; then
+            PKG_MANAGER="yum"
+            PKG_INSTALL="yum install -y"
+            PKG_UPDATE="yum check-update"
+        fi
     fi
+    
     info "检测到系统: $OS_TYPE, 包管理器: $PKG_MANAGER"
+}
+
+# 检查并安装依赖
+check_dependencies() {
+    step "检查系统依赖"
+    
+    local deps=""
+    local missing_deps=()
+    
+    # 检测必需的命令
+    local required_cmds="curl openssl"
+    local recommended_cmds="socat cron"
+    
+    for cmd in $required_cmds; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            missing_deps+=("$cmd")
+        fi
+    done
+    
+    # 检测推荐但不强制的命令
+    local missing_recommended=()
+    for cmd in $recommended_cmds; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            missing_recommended+=("$cmd")
+        fi
+    done
+    
+    if [ ${#missing_deps[@]} -eq 0 ] && [ ${#missing_recommended[@]} -eq 0 ]; then
+        success "所有依赖已安装"
+        return 0
+    fi
+    
+    # 安装缺失的必需依赖
+    if [ ${#missing_deps[@]} -gt 0 ]; then
+        warn "缺少必需依赖: ${missing_deps[*]}"
+        echo
+        info "将尝试自动安装缺失的依赖..."
+        
+        if [ -z "$PKG_MANAGER" ]; then
+            fatal "未检测到可用的包管理器，请手动安装: ${missing_deps[*]}"
+        fi
+        
+        # 更新包列表
+        info "更新包列表..."
+        if ! $PKG_UPDATE > /dev/null 2>&1; then
+            warn "包列表更新失败，尝试继续安装..."
+        fi
+        
+        # 安装依赖
+        for dep in "${missing_deps[@]}"; do
+            info "安装 $dep..."
+            local pkg_name="$dep"
+            
+            # 包名映射
+            case "$dep" in
+                cron)
+                    if [ "$OS_TYPE" = "alpine" ]; then
+                        pkg_name="dcron"
+                    elif [ "$OS_TYPE" = "freebsd" ]; then
+                        pkg_name="cronie"
+                    fi
+                    ;;
+            esac
+            
+            if $PKG_INSTALL "$pkg_name" > /dev/null 2>&1; then
+                success "$dep 安装成功"
+            else
+                fatal "$dep 安装失败，请手动安装后重试"
+            fi
+        done
+    fi
+    
+    # 提示推荐依赖
+    if [ ${#missing_recommended[@]} -gt 0 ]; then
+        warn "缺少推荐依赖: ${missing_recommended[*]}"
+        echo
+        echo -e "${YELLOW}建议安装这些依赖以获得完整功能:${NC}"
+        echo -e "${YELLOW}  - socat: 用于 standalone 模式验证${NC}"
+        echo -e "${YELLOW}  - cron: 用于自动证书续期${NC}"
+        echo
+        
+        if [ -n "$PKG_MANAGER" ]; then
+            if prompt_yesno "是否立即安装推荐依赖?" "y"; then
+                for dep in "${missing_recommended[@]}"; do
+                    info "安装 $dep..."
+                    local pkg_name="$dep"
+                    
+                    case "$dep" in
+                        cron)
+                            if [ "$OS_TYPE" = "alpine" ]; then
+                                pkg_name="dcron"
+                            elif [ "$OS_TYPE" = "freebsd" ]; then
+                                pkg_name="cronie"
+                            fi
+                            ;;
+                    esac
+                    
+                    if $PKG_INSTALL "$pkg_name" > /dev/null 2>&1; then
+                        success "$dep 安装成功"
+                    else
+                        warn "$dep 安装失败，但可以继续运行"
+                    fi
+                done
+            fi
+        else
+            warn "未检测到包管理器，请手动安装推荐依赖"
+        fi
+    fi
+    
+    success "依赖检查完成"
 }
 
 # 用户输入函数
@@ -192,8 +360,9 @@ prompt_yesno() {
 show_dns_menu() {
     echo
     echo -e "${CYAN}请选择 DNS 服务商:${NC}"
-    echo "  1) LuaDNS"
-    echo "  2) Hurricane Electric (HE)"
+    echo "  1) CloudFlare (推荐)"
+    echo "  2) LuaDNS"
+    echo "  3) Hurricane Electric (HE)"
     echo
 }
 
@@ -202,6 +371,14 @@ show_acme_menu() {
     echo -e "${CYAN}请选择 ACME 服务器:${NC}"
     echo "  1) Let's Encrypt (推荐)"
     echo "  2) ZeroSSL"
+    echo
+}
+
+show_cf_auth_menu() {
+    echo
+    echo -e "${CYAN}请选择 CloudFlare 认证方式:${NC}"
+    echo "  1) API Token (推荐)"
+    echo "  2) 全局 API Key (不推荐)"
     echo
 }
 
@@ -224,6 +401,10 @@ select_config_mode() {
     
     if [ -z "$DOMAIN" ] || [ -z "$EMAIL" ]; then
         has_complete_config=false
+    elif [ "$DNS_PROVIDER" = "cloudflare" ]; then
+        if [ -z "$CF_Token" ] && [ -z "$CF_Key" ]; then
+            has_complete_config=false
+        fi
     elif [ "$DNS_PROVIDER" = "luadns" ] && [ -z "$LUA_KEY" ]; then
         has_complete_config=false
     elif [ "$DNS_PROVIDER" = "he" ] && [ -z "$HE_USERNAME" ]; then
@@ -302,6 +483,9 @@ quick_config() {
         else
             # 检查当前DNS提供商的配置是否完整
             case "$DNS_PROVIDER" in
+                cloudflare)
+                    configure_cloudflare_credentials
+                    ;;
                 luadns)
                     if [ -z "$LUA_KEY" ]; then
                         prompt_input "LuaDNS API Key" "LUA_KEY" ""
@@ -353,6 +537,11 @@ full_config() {
     WILDCARD_DOMAIN=""
     EMAIL=""
     DNS_PROVIDER=""
+    CF_Token=""
+    CF_Zone_ID=""
+    CF_Account_ID=""
+    CF_Key=""
+    CF_Email=""
     LUA_KEY=""
     LUA_EMAIL=""
     HE_USERNAME=""
@@ -410,11 +599,19 @@ full_config() {
 configure_dns_provider() {
     while true; do
         show_dns_menu
-        echo -e "${CYAN}请选择 [1-2]: ${NC}"
+        echo -e "${CYAN}请选择 [1-3]: ${NC}"
         read -r dns_choice
         
         case "$dns_choice" in
             1)
+                DNS_PROVIDER="cloudflare"
+                echo
+                echo -e "${CYAN}CloudFlare 配置:${NC}"
+                configure_cloudflare_credentials
+                info "已选择 CloudFlare 作为DNS提供商"
+                break
+                ;;
+            2)
                 DNS_PROVIDER="luadns"
                 echo
                 echo -e "${CYAN}LuaDNS 配置:${NC}"
@@ -425,7 +622,7 @@ configure_dns_provider() {
                 info "已选择 LuaDNS 作为DNS提供商"
                 break
                 ;;
-            2)
+            3)
                 DNS_PROVIDER="he"
                 echo
                 echo -e "${CYAN}Hurricane Electric 配置:${NC}"
@@ -435,6 +632,59 @@ configure_dns_provider() {
                 prompt_password "HE 密码" "HE_PASSWORD" ""
                 info "已选择 Hurricane Electric 作为DNS提供商"
                 break
+                ;;
+            *)
+                error "无效选择，请输入 1-3 之间的数字"
+                ;;
+        esac
+    done
+}
+
+# 配置 CloudFlare 认证方式
+configure_cloudflare_credentials() {
+    while true; do
+        show_cf_auth_menu
+        echo -e "${CYAN}请选择认证方式 [1-2]: ${NC}"
+        read -r cf_auth_choice
+        
+        case "$cf_auth_choice" in
+            1)
+                # API Token 方式 (推荐)
+                echo
+                echo -e "${CYAN}CloudFlare API Token 配置:${NC}"
+                echo -e "${CYAN}您需要在 CloudFlare 控制台创建 API Token。${NC}"
+                echo -e "${CYAN}所需权限: Zone -> DNS -> Edit${NC}"
+                echo
+                prompt_input "CloudFlare API Token" "CF_Token" ""
+                
+                echo
+                echo -e "${CYAN}Zone ID 和 Account ID (可选):${NC}"
+                echo -e "${CYAN}可以在域名的 Overview 页面找到这些ID。${NC}"
+                echo -e "${CYAN}如果留空，acme.sh 会自动检测。${NC}"
+                prompt_input "Zone ID (可选)" "CF_Zone_ID" "" "true"
+                prompt_input "Account ID (可选)" "CF_Account_ID" "" "true"
+                
+                # 清除非推荐方式的配置
+                CF_Key=""
+                CF_Email=""
+                break
+                ;;
+            2)
+                # 全局 API Key 方式 (不推荐)
+                echo
+                echo -e "${YELLOW}警告: 全局 API Key 方式不推荐使用，因为泄漏会完全危害您的账户。${NC}"
+                echo -e "${CYAN}您可以在 CloudFlare 控制台的 API Tokens 页面找到全局 API Key。${NC}"
+                echo
+                if prompt_yesno "确定要使用不推荐的全局 API Key 方式吗?" "n"; then
+                    prompt_input "CloudFlare 邮箱" "CF_Email" "$EMAIL"
+                    prompt_input "CloudFlare 全局 API Key" "CF_Key" ""
+                    
+                    # 清除推荐方式的配置
+                    CF_Token=""
+                    CF_Zone_ID=""
+                    CF_Account_ID=""
+                    break
+                fi
                 ;;
             *)
                 error "无效选择，请输入 1 或 2"
@@ -483,6 +733,16 @@ validate_config() {
     fi
     
     case "$DNS_PROVIDER" in
+        cloudflare)
+            if [ -z "$CF_Token" ] && [ -z "$CF_Key" ]; then
+                error "CloudFlare 认证信息未设置"
+                errors=$((errors + 1))
+            fi
+            if [ -n "$CF_Key" ] && [ -z "$CF_Email" ]; then
+                error "使用全局 API Key 时需要设置邮箱"
+                errors=$((errors + 1))
+            fi
+            ;;
         luadns)
             if [ -z "$LUA_KEY" ]; then
                 error "LuaDNS API Key 未设置"
@@ -528,21 +788,41 @@ show_config() {
     
     echo -e "${CYAN}DNS配置:${NC}"
     echo "  • DNS提供商: ${DNS_PROVIDER:-未设置}"
-    if [ "$DNS_PROVIDER" = "luadns" ]; then
-        if [ -n "$LUA_KEY" ]; then
-            echo "  • LuaDNS Key: ${LUA_KEY:0:8}****"
-        else
-            echo "  • LuaDNS Key: 未设置"
-        fi
-        echo "  • LuaDNS 邮箱: ${LUA_EMAIL:-未设置}"
-    elif [ "$DNS_PROVIDER" = "he" ]; then
-        echo "  • HE 用户名: ${HE_USERNAME:-未设置}"
-        if [ -n "$HE_PASSWORD" ]; then
-            echo "  • HE 密码: ${HE_PASSWORD:0:8}****"
-        else
-            echo "  • HE 密码: 未设置"
-        fi
-    fi
+    
+    case "$DNS_PROVIDER" in
+        cloudflare)
+            if [ -n "$CF_Token" ]; then
+                echo "  • CloudFlare Token: ${CF_Token:0:8}**** (API Token)"
+                if [ -n "$CF_Zone_ID" ]; then
+                    echo "  • Zone ID: $CF_Zone_ID"
+                fi
+                if [ -n "$CF_Account_ID" ]; then
+                    echo "  • Account ID: $CF_Account_ID"
+                fi
+            elif [ -n "$CF_Key" ]; then
+                echo "  • CloudFlare Key: ${CF_Key:0:8}**** (全局 API Key)"
+                echo "  • CloudFlare 邮箱: $CF_Email"
+            else
+                echo "  • CloudFlare 认证: 未设置"
+            fi
+            ;;
+        luadns)
+            if [ -n "$LUA_KEY" ]; then
+                echo "  • LuaDNS Key: ${LUA_KEY:0:8}****"
+            else
+                echo "  • LuaDNS Key: 未设置"
+            fi
+            echo "  • LuaDNS 邮箱: ${LUA_EMAIL:-未设置}"
+            ;;
+        he)
+            echo "  • HE 用户名: ${HE_USERNAME:-未设置}"
+            if [ -n "$HE_PASSWORD" ]; then
+                echo "  • HE 密码: ${HE_PASSWORD:0:8}****"
+            else
+                echo "  • HE 密码: 未设置"
+            fi
+            ;;
+    esac
     
     echo -e "${CYAN}证书配置:${NC}"
     echo "  • 证书路径: $CERT_PATH"
@@ -625,62 +905,84 @@ modify_config() {
     done
 }
 
-# 检查和安装系统依赖
-check_dependencies() {
-    step "检查系统依赖"
+# 保存配置到文件
+save_config() {
+    local config_file="${1:-./ssl-manager.conf}"
     
-    case "$PKG_MANAGER" in
-        apt-get)
-            # Debian/Ubuntu
-            if ! command -v apt-get >/dev/null 2>&1; then
-                fatal "apt-get 不可用"
-            fi
-            
-            if ! apt-get update 2>/dev/null; then
-                warn "包列表更新失败，尝试继续..."
-            fi
-            
-            local deps="curl wget openssl ca-certificates socat"
-            if ! apt-get install -y $deps 2>/dev/null; then
-                fatal "系统依赖安装失败"
-            fi
-            ;;
-            
-        apk)
-            # Alpine
-            if ! command -v apk >/dev/null 2>&1; then
-                fatal "apk 不可用"
-            fi
-            
-            if ! apk update 2>/dev/null; then
-                warn "包列表更新失败，尝试继续..."
-            fi
-            
-            local deps="curl wget openssl ca-certificates socat"
-            if ! apk add $deps 2>/dev/null; then
-                fatal "系统依赖安装失败"
-            fi
-            ;;
-            
-        *)
-            warn "未知的包管理器，跳过依赖安装"
-            ;;
-    esac
+    step "保存配置到文件: $config_file"
     
-    # 验证基本命令
-    for cmd in curl openssl; do
-        if ! command -v "$cmd" >/dev/null 2>&1; then
-            fatal "必需命令 $cmd 未安装"
-        fi
-    done
+    cat > "$config_file" << EOF
+# SSL证书管理脚本配置文件
+# 生成时间: $(date)
+
+# 域名配置
+DOMAIN="$DOMAIN"
+WILDCARD_DOMAIN="$WILDCARD_DOMAIN"
+EMAIL="$EMAIL"
+
+# DNS提供商配置
+DNS_PROVIDER="$DNS_PROVIDER"
+
+# CloudFlare配置
+CF_Token="$CF_Token"
+CF_Zone_ID="$CF_Zone_ID"
+CF_Account_ID="$CF_Account_ID"
+CF_Key="$CF_Key"
+CF_Email="$CF_Email"
+
+# LuaDNS配置
+LUA_KEY="$LUA_KEY"
+LUA_EMAIL="$LUA_EMAIL"
+
+# Hurricane Electric配置
+HE_USERNAME="$HE_USERNAME"
+HE_PASSWORD="$HE_PASSWORD"
+
+# 证书路径配置
+CERT_PATH="$CERT_PATH"
+KEY_PATH="$KEY_PATH"
+
+# ACME服务器配置
+ACME_SERVER="$ACME_SERVER"
+
+# 后续脚本配置
+POST_SCRIPT_CMD="$POST_SCRIPT_CMD"
+POST_SCRIPT_ENABLED="$POST_SCRIPT_ENABLED"
+EOF
+
+    chmod 600 "$config_file"
+    success "配置已保存到: $config_file"
+}
+
+# 从文件加载配置
+load_config() {
+    local config_file="${1:-./ssl-manager.conf}"
     
-    success "系统依赖检查完成"
+    if [ ! -f "$config_file" ]; then
+        error "配置文件不存在: $config_file"
+        return 1
+    fi
+    
+    step "从文件加载配置: $config_file"
+    
+    # 检查文件安全性
+    if file "$config_file" | grep -q "script" || file "$config_file" | grep -q "binary"; then
+        error "配置文件可能不安全，拒绝加载"
+        return 1
+    fi
+    
+    # 源配置文件
+    source "$config_file"
+    success "配置已从文件加载: $config_file"
+    show_config
 }
 
 # 安装 acme.sh
 install_acme() {
     local acme_dir="$ACME_HOME"
     local acme_script="$acme_dir/acme.sh"
+    local max_retries=3
+    local retry_count=0
     
     # 检查是否已安装
     if [ -f "$acme_script" ] && [ -x "$acme_script" ]; then
@@ -691,36 +993,73 @@ install_acme() {
     
     step "安装 acme.sh"
     
-    # 方法1: 使用官方安装脚本
-    info "尝试官方安装脚本..."
-    if curl -fsSL https://get.acme.sh | sh -s email="$EMAIL" > /dev/null 2>&1; then
-        if [ -f "$acme_script" ]; then
-            chmod +x "$acme_script"
-            export PATH="$acme_dir:$PATH"
-            success "acme.sh 安装成功"
-            return 0
-        fi
-    fi
-    
-    # 方法2: Git克隆
-    if command -v git >/dev/null 2>&1; then
-        info "尝试 Git 克隆安装..."
-        case "$PKG_MANAGER" in
-            apt-get) apt-get install -y git 2>/dev/null || warn "Git 安装失败" ;;
-            apk) apk add git 2>/dev/null || warn "Git 安装失败" ;;
-        esac
+    while [ $retry_count -lt $max_retries ]; do
+        retry_count=$((retry_count + 1))
         
-        if git clone https://github.com/acmesh-official/acme.sh.git "$acme_dir" 2>/dev/null; then
-            cd "$acme_dir"
-            if ./acme.sh --install --home "$acme_dir" --accountemail "$EMAIL" > /dev/null 2>&1; then
+        if [ $retry_count -gt 1 ]; then
+            warn "安装失败，重试 ($retry_count/$max_retries)..."
+        fi
+        
+        # 方法1: 使用官方安装脚本 :cite[1]
+        info "尝试官方安装脚本..."
+        if curl -fsSL https://get.acme.sh | sh -s email="$EMAIL" > /dev/null 2>&1; then
+            if [ -f "$acme_script" ]; then
+                chmod +x "$acme_script"
                 export PATH="$acme_dir:$PATH"
-                success "acme.sh 安装成功 (Git)"
+                success "acme.sh 安装成功"
+                return 0
+            fi
+        fi
+        
+        # 方法2: 使用GitHub镜像 :cite[3]
+        info "尝试GitHub镜像安装..."
+        if curl -fsSL https://raw.githubusercontent.com/acmesh-official/acme.sh/master/acme.sh | sh -s -- --install-online -m "$EMAIL" > /dev/null 2>&1; then
+            if [ -f "$acme_script" ]; then
+                chmod +x "$acme_script"
+                export PATH="$acme_dir:$PATH"
+                success "acme.sh 安装成功 (GitHub镜像)"
+                return 0
+            fi
+        fi
+        
+        # 方法3: Git克隆 :cite[1]
+        if command -v git >/dev/null 2>&1; then
+            info "尝试 Git 克隆安装..."
+            case "$PKG_MANAGER" in
+                apt-get) $PKG_INSTALL git >/dev/null 2>&1 || warn "Git 安装失败" ;;
+                apk) $PKG_INSTALL git >/dev/null 2>&1 || warn "Git 安装失败" ;;
+                pkg) $PKG_INSTALL git >/dev/null 2>&1 || warn "Git 安装失败" ;;
+            esac
+            
+            if git clone https://github.com/acmesh-official/acme.sh.git "$acme_dir" 2>/dev/null; then
+                cd "$acme_dir"
+                if ./acme.sh --install --home "$acme_dir" --accountemail "$EMAIL" > /dev/null 2>&1; then
+                    export PATH="$acme_dir:$PATH"
+                    success "acme.sh 安装成功 (Git)"
+                    return 0
+                fi
+            fi
+        fi
+        
+        if [ $retry_count -lt $max_retries ]; then
+            sleep 2
+        fi
+    done
+    
+    # 最后尝试使用wget
+    if command -v wget >/dev/null 2>&1; then
+        info "尝试使用wget安装..."
+        if wget -O - https://get.acme.sh | sh -s email="$EMAIL" > /dev/null 2>&1; then
+            if [ -f "$acme_script" ]; then
+                chmod +x "$acme_script"
+                export PATH="$acme_dir:$PATH"
+                success "acme.sh 安装成功 (wget)"
                 return 0
             fi
         fi
     fi
     
-    fatal "acme.sh 安装失败"
+    fatal "acme.sh 安装失败，请检查网络连接或手动安装"
 }
 
 # 配置 DNS 提供商
@@ -730,6 +1069,40 @@ setup_dns_provider() {
     step "配置 DNS 提供商: $DNS_PROVIDER"
     
     case "$DNS_PROVIDER" in
+        cloudflare)
+            # 清除可能的旧配置
+            {
+                grep -v "^CF_Token=" "$account_conf" 2>/dev/null || true
+                grep -v "^CF_Zone_ID=" "$account_conf" 2>/dev/null || true
+                grep -v "^CF_Account_ID=" "$account_conf" 2>/dev/null || true
+                grep -v "^CF_Key=" "$account_conf" 2>/dev/null || true
+                grep -v "^CF_Email=" "$account_conf" 2>/dev/null || true
+            } > "${account_conf}.tmp" && mv "${account_conf}.tmp" "$account_conf"
+            
+            # 设置新的配置
+            if [ -n "$CF_Token" ]; then
+                # API Token 方式
+                {
+                    echo "CF_Token=$CF_Token"
+                    [ -n "$CF_Zone_ID" ] && echo "CF_Zone_ID=$CF_Zone_ID"
+                    [ -n "$CF_Account_ID" ] && echo "CF_Account_ID=$CF_Account_ID"
+                } >> "$account_conf"
+                
+                export CF_Token="$CF_Token"
+                [ -n "$CF_Zone_ID" ] && export CF_Zone_ID="$CF_Zone_ID"
+                [ -n "$CF_Account_ID" ] && export CF_Account_ID="$CF_Account_ID"
+            else
+                # 全局 API Key 方式
+                {
+                    echo "CF_Key=$CF_Key"
+                    echo "CF_Email=$CF_Email"
+                } >> "$account_conf"
+                
+                export CF_Key="$CF_Key"
+                export CF_Email="$CF_Email"
+            fi
+            ;;
+            
         luadns)
             {
                 grep -v "^LUA_Key=" "$account_conf" 2>/dev/null || true
@@ -792,6 +1165,7 @@ issue_certificate() {
     # 确定 DNS API 名称
     local dns_api
     case "$DNS_PROVIDER" in
+        cloudflare) dns_api="dns_cf" ;;
         luadns) dns_api="dns_lua" ;;
         he) dns_api="dns_he" ;;
     esac
@@ -1148,7 +1522,7 @@ show_cert_info() {
     fi
 }
 
-# 申请证书流程
+# 一键申请证书流程
 certificate_issue_flow() {
     title "申请新证书"
     
@@ -1195,12 +1569,17 @@ certificate_issue_flow() {
     echo "  • DNS提供商: $DNS_PROVIDER"
     separator
     
+    # 保存配置
+    if prompt_yesno "是否保存当前配置以便下次使用?" "y"; then
+        save_config
+    fi
+    
     execute_post_script
 }
 
 # 显示菜单
 show_menu() {
-    title "SSL 证书管理工具"
+    title "SSL 证书管理工具 By Prince 2025.10.15 "
     echo -e "${GREEN}  1) [申请] 申请新证书${NC}"
     echo -e "${YELLOW}  2) [续期] 续期证书${NC}"
     echo -e "${YELLOW}  3) [批量续期] 续期所有证书${NC}"
@@ -1209,7 +1588,9 @@ show_menu() {
     echo -e "${RED}  6) [卸载] 卸载证书${NC}"
     echo -e "${RED}  7) [卸载ACME] 卸载 acme.sh${NC}"
     echo -e "${MAGENTA}  8) [配置] 显示/修改配置${NC}"
-    echo -e "${CYAN}  9) [帮助] 显示帮助${NC}"
+    echo -e "${CYAN}  9) [保存配置] 保存当前配置${NC}"
+    echo -e "${CYAN} 10) [加载配置] 从文件加载配置${NC}"
+    echo -e "${CYAN} 11) [帮助] 显示帮助${NC}"
     echo -e "${GREEN}  0) [退出] 退出程序${NC}"
     echo
 }
@@ -1218,7 +1599,7 @@ show_menu() {
 main_menu() {
     while true; do
         show_menu
-        echo -e "${CYAN}请选择操作 [0-9]: ${NC}"
+        echo -e "${CYAN}请选择操作 [0-11]: ${NC}"
         read -r choice
         
         case "$choice" in
@@ -1247,6 +1628,12 @@ main_menu() {
                 modify_config
                 ;;
             9)
+                save_config
+                ;;
+            10)
+                load_config
+                ;;
+            11)
                 show_help
                 ;;
             0)
@@ -1254,7 +1641,7 @@ main_menu() {
                 exit 0
                 ;;
             *)
-                error "无效选择，请输入 0-9 之间的数字"
+                error "无效选择，请输入 0-11 之间的数字"
                 ;;
         esac
         
@@ -1266,6 +1653,23 @@ main_menu() {
             exit 0
         fi
     done
+}
+
+# 一键运行函数
+quick_issue() {
+    info "一键模式启动..."
+    
+    if [ -f "./ssl-manager.conf" ]; then
+        info "检测到配置文件，自动加载..."
+        load_config "./ssl-manager.conf"
+    fi
+    
+    if validate_config; then
+        certificate_issue_flow
+    else
+        warn "环境变量配置不完整，进入交互式配置"
+        certificate_issue_flow
+    fi
 }
 
 # 帮助信息
@@ -1281,11 +1685,21 @@ show_help() {
     echo "  • 证书卸载: 安全移除不需要的证书"
     echo "  • 配置管理: 显示和修改当前配置"
     echo
+    echo -e "${CYAN}支持的 DNS 提供商:${NC}"
+    echo "  • CloudFlare (推荐)"
+    echo "  • LuaDNS"
+    echo "  • Hurricane Electric (HE)"
+    echo
     echo -e "${CYAN}支持的环境变量:${NC}"
     echo "  DOMAIN               证书域名"
     echo "  WILDCARD_DOMAIN      通配符域名"
     echo "  EMAIL                注册邮箱"
-    echo "  DNS_PROVIDER         DNS提供商: luadns 或 he"
+    echo "  DNS_PROVIDER         DNS提供商: cloudflare, luadns 或 he"
+    echo "  CF_Token             CloudFlare API Token (推荐)"
+    echo "  CF_Zone_ID           CloudFlare Zone ID (可选)"
+    echo "  CF_Account_ID        CloudFlare Account ID (可选)"
+    echo "  CF_Key               CloudFlare 全局 API Key (不推荐)"
+    echo "  CF_Email             CloudFlare 邮箱 (不推荐)"
     echo "  LUA_KEY              LuaDNS API 密钥"
     echo "  LUA_EMAIL            LuaDNS 邮箱"
     echo "  HE_USERNAME          Hurricane Electric 用户名"
@@ -1300,8 +1714,11 @@ show_help() {
     echo "  # 交互式菜单模式"
     echo "  ./ssl-manager.sh"
     echo
-    echo "  # 直接申请证书"
-    echo "  DOMAIN=\"example.com\" LUA_KEY=\"your_key\" ./ssl-manager.sh --issue"
+    echo "  # 一键申请证书 (使用环境变量或配置文件)"
+    echo "  DOMAIN=\"example.com\" CF_Token=\"your_token\" ./ssl-manager.sh --issue"
+    echo
+    echo "  # 保存配置后一键运行"
+    echo "  ./ssl-manager.sh --quick"
     echo
     echo "  # 续期证书"
     echo "  DOMAIN=\"example.com\" ./ssl-manager.sh --renew"
@@ -1334,6 +1751,9 @@ case "${1:-}" in
         ;;
     -c|--config)
         show_config
+        ;;
+    -q|--quick)
+        quick_issue
         ;;
     -h|--help|help)
         show_help
