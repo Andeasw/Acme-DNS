@@ -3,7 +3,7 @@
 # RSA 2048 证书管理脚本 (acme.sh + CloudFlare/LuaDNS/Hurricane Electric)
 # 支持 Debian、Alpine 和 FreeBSD 系统
 # 支持证书申请、续期、管理和卸载
-# By Prince 2025.10.15
+# By Prince 2025.10.16
 # ===========================================
 
 set -e
