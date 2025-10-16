@@ -56,6 +56,31 @@ CYAN='\033[0;36m'
 MAGENTA='\033[0;35m'
 NC='\033[0m'
 
+# 生成随机字符串
+generate_random_string() {
+    local length="${1:-8}"
+    local prefix="${2:-}"
+    local random_str=$(openssl rand -hex $((length/2)) 2>/dev/null || 
+                      cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w $length | head -n 1)
+    echo "${prefix}${random_str}"
+}
+
+# 生成默认域名
+generate_default_domain() {
+    local random_part=$(generate_random_string 6 "domain")
+    echo "${random_part}.local"
+}
+
+# 生成默认邮箱
+generate_default_email() {
+    local domain="${1:-}"
+    if [ -z "$domain" ]; then
+        domain=$(generate_default_domain)
+    fi
+    local random_part=$(generate_random_string 4 "admin")
+    echo "${random_part}@${domain}"
+}
+
 # 日志函数
 error() { echo -e "${RED}[错误] $1${NC}" >&2; }
 warn() { echo -e "${YELLOW}[警告] $1${NC}" >&2; }
@@ -459,7 +484,8 @@ quick_config() {
     # 域名配置
     if [ -z "$DOMAIN" ]; then
         step "域名配置"
-        prompt_input "主域名" "DOMAIN" "example.com"
+        local default_domain=$(generate_default_domain)
+        prompt_input "主域名" "DOMAIN" "$default_domain"
     fi
     
     if [ -z "$WILDCARD_DOMAIN" ] && prompt_yesno "是否申请通配符证书?" "y"; then
@@ -469,7 +495,8 @@ quick_config() {
     # 邮箱配置
     if [ -z "$EMAIL" ]; then
         step "邮箱配置"
-        prompt_input "邮箱地址" "EMAIL" "admin@$DOMAIN"
+        local default_email=$(generate_default_email "$DOMAIN")
+        prompt_input "邮箱地址" "EMAIL" "$default_email"
     fi
     
     # DNS提供商配置
@@ -509,8 +536,18 @@ quick_config() {
     # 其他配置
     if prompt_yesno "是否需要修改证书路径配置?" "n"; then
         step "证书路径配置"
-        prompt_input "证书文件保存路径" "CERT_PATH" "/root/ssl/cert.pem"
-        prompt_input "私钥文件保存路径" "KEY_PATH" "/root/ssl/private.key"
+        local default_cert_path="/root/ssl/$(generate_random_string 6 "cert_").pem"
+        local default_key_path="/root/ssl/$(generate_random_string 6 "key_").key"
+        prompt_input "证书文件保存路径" "CERT_PATH" "$default_cert_path"
+        prompt_input "私钥文件保存路径" "KEY_PATH" "$default_key_path"
+    else
+        # 设置默认证书路径
+        if [ -z "$CERT_PATH" ]; then
+            CERT_PATH="/root/ssl/${DOMAIN}/cert.pem"
+        fi
+        if [ -z "$KEY_PATH" ]; then
+            KEY_PATH="/root/ssl/${DOMAIN}/private.key"
+        fi
     fi
     
     if prompt_yesno "是否需要修改ACME服务器配置?" "n"; then
@@ -555,7 +592,8 @@ full_config() {
     if [ -n "$old_domain" ]; then
         prompt_input "主域名" "DOMAIN" "$old_domain"
     else
-        prompt_input "主域名" "DOMAIN" "example.com"
+        local default_domain=$(generate_default_domain)
+        prompt_input "主域名" "DOMAIN" "$default_domain"
     fi
     
     if prompt_yesno "是否申请通配符证书?" "y"; then
@@ -567,7 +605,8 @@ full_config() {
     if [ -n "$old_email" ]; then
         prompt_input "邮箱地址" "EMAIL" "$old_email"
     else
-        prompt_input "邮箱地址" "EMAIL" "admin@$DOMAIN"
+        local default_email=$(generate_default_email "$DOMAIN")
+        prompt_input "邮箱地址" "EMAIL" "$default_email"
     fi
     
     # DNS提供商配置
@@ -576,8 +615,10 @@ full_config() {
     
     # 证书路径配置
     step "证书路径配置"
-    prompt_input "证书文件保存路径" "CERT_PATH" "/root/ssl/cert.pem"
-    prompt_input "私钥文件保存路径" "KEY_PATH" "/root/ssl/private.key"
+    local default_cert_path="/root/ssl/${DOMAIN}/cert.pem"
+    local default_key_path="/root/ssl/${DOMAIN}/private.key"
+    prompt_input "证书文件保存路径" "CERT_PATH" "$default_cert_path"
+    prompt_input "私钥文件保存路径" "KEY_PATH" "$default_key_path"
     
     # ACME服务器配置
     step "ACME服务器配置"
@@ -825,8 +866,8 @@ show_config() {
     esac
     
     echo -e "${CYAN}证书配置:${NC}"
-    echo "  • 证书路径: $CERT_PATH"
-    echo "  • 私钥路径: $KEY_PATH"
+    echo "  • 证书路径: ${CERT_PATH:-未设置}"
+    echo "  • 私钥路径: ${KEY_PATH:-未设置}"
     echo "  • ACME服务器: $ACME_SERVER"
     
     if [ "$POST_SCRIPT_ENABLED" = "true" ] && [ -n "$POST_SCRIPT_CMD" ]; then
@@ -1000,7 +1041,7 @@ install_acme() {
             warn "安装失败，重试 ($retry_count/$max_retries)..."
         fi
         
-        # 方法1: 使用官方安装脚本 :cite[1]
+        # 方法1: 使用官方安装脚本
         info "尝试官方安装脚本..."
         if curl -fsSL https://get.acme.sh | sh -s email="$EMAIL" > /dev/null 2>&1; then
             if [ -f "$acme_script" ]; then
@@ -1011,7 +1052,7 @@ install_acme() {
             fi
         fi
         
-        # 方法2: 使用GitHub镜像 :cite[3]
+        # 方法2: 使用GitHub镜像
         info "尝试GitHub镜像安装..."
         if curl -fsSL https://raw.githubusercontent.com/acmesh-official/acme.sh/master/acme.sh | sh -s -- --install-online -m "$EMAIL" > /dev/null 2>&1; then
             if [ -f "$acme_script" ]; then
@@ -1022,7 +1063,7 @@ install_acme() {
             fi
         fi
         
-        # 方法3: Git克隆 :cite[1]
+        # 方法3: Git克隆
         if command -v git >/dev/null 2>&1; then
             info "尝试 Git 克隆安装..."
             case "$PKG_MANAGER" in
@@ -1216,6 +1257,9 @@ install_certificate() {
         --key-file "$KEY_PATH" \
         --fullchain-file "$CERT_PATH" >/dev/null 2>&1; then
         success "证书安装成功"
+        
+        # 设置自动续期安装
+        setup_auto_renewal
     else
         # 手动复制
         warn "标准安装失败，尝试手动复制..."
@@ -1224,6 +1268,9 @@ install_certificate() {
             cp "$acme_cert_dir/$DOMAIN.key" "$KEY_PATH"
             cp "$acme_cert_dir/fullchain.cer" "$CERT_PATH"
             success "证书手动复制成功"
+            
+            # 设置自动续期安装
+            setup_auto_renewal
         else
             fatal "证书文件不存在: $acme_cert_dir"
         fi
@@ -1231,6 +1278,28 @@ install_certificate() {
     
     chmod 600 "$KEY_PATH"
     chmod 644 "$CERT_PATH"
+}
+
+# 设置自动续期安装
+setup_auto_renewal() {
+    step "配置自动续期安装"
+    
+    # 创建续期命令
+    local reload_cmd="echo '证书已更新'"
+    if [ "$POST_SCRIPT_ENABLED" = "true" ] && [ -n "$POST_SCRIPT_CMD" ]; then
+        reload_cmd="$POST_SCRIPT_CMD"
+    fi
+    
+    # 使用 acme.sh 的安装证书功能设置自动续期
+    if "$ACME_HOME/acme.sh" --install-cert -d "$DOMAIN" \
+        --key-file "$KEY_PATH" \
+        --fullchain-file "$CERT_PATH" \
+        --reloadcmd "$reload_cmd" >/dev/null 2>&1; then
+        success "自动续期安装配置成功"
+        info "证书续期时将自动更新到: $CERT_PATH, $KEY_PATH"
+    else
+        warn "自动续期安装配置失败，续期时需要手动安装"
+    fi
 }
 
 # 验证证书
@@ -1318,10 +1387,14 @@ renew_certificate() {
     if "$ACME_HOME/acme.sh" --renew -d "$domain_to_renew" --force; then
         success "证书续期成功"
         
-        # 重新安装证书
-        if [ -f "$CERT_PATH" ] && [ -f "$KEY_PATH" ]; then
-            install_certificate
-            verify_certificate
+        # 重新安装证书到自定义路径
+        install_certificate
+        verify_certificate
+        
+        # 执行后续脚本
+        if [ "$POST_SCRIPT_ENABLED" = "true" ] && [ -n "$POST_SCRIPT_CMD" ]; then
+            info "执行后续命令..."
+            eval "$POST_SCRIPT_CMD"
         fi
     else
         error "证书续期失败"
@@ -1715,13 +1788,13 @@ show_help() {
     echo "  ./ssl-manager.sh"
     echo
     echo "  # 一键申请证书 (使用环境变量或配置文件)"
-    echo "  DOMAIN=\"example.com\" CF_Token=\"your_token\" ./ssl-manager.sh --issue"
+    echo "  DOMAIN=\"your-domain.com\" CF_Token=\"your_token\" ./ssl-manager.sh --issue"
     echo
     echo "  # 保存配置后一键运行"
     echo "  ./ssl-manager.sh --quick"
     echo
     echo "  # 续期证书"
-    echo "  DOMAIN=\"example.com\" ./ssl-manager.sh --renew"
+    echo "  DOMAIN=\"your-domain.com\" ./ssl-manager.sh --renew"
     echo
     echo -e "${YELLOW}提示: 在 SSH 终端中，建议使用交互式菜单模式以获得最佳体验。${NC}"
 }
