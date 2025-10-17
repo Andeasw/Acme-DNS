@@ -1,9 +1,9 @@
 #!/bin/bash
 # ===========================================
-# RSA 2048 证书管理脚本 (acme.sh + CloudFlare/LuaDNS/Hurricane Electric)
+# RSA 2048 证书管理脚本 (acme.sh + CloudFlare/LuaDNS/Hurricane Electric/ClouDNS)
 # 支持 Debian、Alpine 和 FreeBSD 系统
 # 支持证书申请、续期、管理和卸载
-# By Prince 2025.10.16
+# By Prince 2025.10.17
 # ===========================================
 
 set -e
@@ -16,7 +16,7 @@ KEY_PATH="${KEY_PATH:-}"
 EMAIL="${EMAIL:-}"
 
 # DNS 提供商配置
-DNS_PROVIDER="${DNS_PROVIDER:-}"  # cloudflare, luadns 或 he
+DNS_PROVIDER="${DNS_PROVIDER:-}"  # cloudflare, luadns, he 或 cloudns
 
 # CloudFlare 配置
 CF_Token="${CF_Token:-}"
@@ -32,6 +32,11 @@ LUA_EMAIL="${LUA_EMAIL:-}"
 # Hurricane Electric 配置
 HE_USERNAME="${HE_USERNAME:-}"
 HE_PASSWORD="${HE_PASSWORD:-}"
+
+# ClouDNS 配置
+CLOUDNS_AUTH_ID="${CLOUDNS_AUTH_ID:-}"
+CLOUDNS_SUB_AUTH_ID="${CLOUDNS_SUB_AUTH_ID:-}"
+CLOUDNS_AUTH_PASSWORD="${CLOUDNS_AUTH_PASSWORD:-}"
 
 # ACME 配置
 ACME_SERVER="${ACME_SERVER:-letsencrypt}"
@@ -388,6 +393,7 @@ show_dns_menu() {
     echo "  1) CloudFlare (推荐)"
     echo "  2) LuaDNS"
     echo "  3) Hurricane Electric (HE)"
+    echo "  4) ClouDNS"
     echo
 }
 
@@ -404,6 +410,14 @@ show_cf_auth_menu() {
     echo -e "${CYAN}请选择 CloudFlare 认证方式:${NC}"
     echo "  1) API Token (推荐)"
     echo "  2) 全局 API Key (不推荐)"
+    echo
+}
+
+show_cloudns_auth_menu() {
+    echo
+    echo -e "${CYAN}请选择 ClouDNS 认证方式:${NC}"
+    echo "  1) 子用户 Auth ID (推荐)"
+    echo "  2) 常规 Auth ID"
     echo
 }
 
@@ -434,6 +448,13 @@ select_config_mode() {
         has_complete_config=false
     elif [ "$DNS_PROVIDER" = "he" ] && [ -z "$HE_USERNAME" ]; then
         has_complete_config=false
+    elif [ "$DNS_PROVIDER" = "cloudns" ]; then
+        if [ -z "$CLOUDNS_SUB_AUTH_ID" ] && [ -z "$CLOUDNS_AUTH_ID" ]; then
+            has_complete_config=false
+        fi
+        if [ -z "$CLOUDNS_AUTH_PASSWORD" ]; then
+            has_complete_config=false
+        fi
     fi
     
     if [ "$has_complete_config" = "true" ]; then
@@ -529,6 +550,9 @@ quick_config() {
                         prompt_password "HE 密码" "HE_PASSWORD" ""
                     fi
                     ;;
+                cloudns)
+                    configure_cloudns_credentials
+                    ;;
             esac
         fi
     fi
@@ -583,6 +607,9 @@ full_config() {
     LUA_EMAIL=""
     HE_USERNAME=""
     HE_PASSWORD=""
+    CLOUDNS_AUTH_ID=""
+    CLOUDNS_SUB_AUTH_ID=""
+    CLOUDNS_AUTH_PASSWORD=""
     ACME_SERVER="letsencrypt"
     POST_SCRIPT_CMD=""
     POST_SCRIPT_ENABLED="false"
@@ -640,7 +667,7 @@ full_config() {
 configure_dns_provider() {
     while true; do
         show_dns_menu
-        echo -e "${CYAN}请选择 [1-3]: ${NC}"
+        echo -e "${CYAN}请选择 [1-4]: ${NC}"
         read -r dns_choice
         
         case "$dns_choice" in
@@ -674,8 +701,16 @@ configure_dns_provider() {
                 info "已选择 Hurricane Electric 作为DNS提供商"
                 break
                 ;;
+            4)
+                DNS_PROVIDER="cloudns"
+                echo
+                echo -e "${CYAN}ClouDNS 配置:${NC}"
+                configure_cloudns_credentials
+                info "已选择 ClouDNS 作为DNS提供商"
+                break
+                ;;
             *)
-                error "无效选择，请输入 1-3 之间的数字"
+                error "无效选择，请输入 1-4 之间的数字"
                 ;;
         esac
     done
@@ -724,6 +759,50 @@ configure_cloudflare_credentials() {
                     CF_Token=""
                     CF_Zone_ID=""
                     CF_Account_ID=""
+                    break
+                fi
+                ;;
+            *)
+                error "无效选择，请输入 1 或 2"
+                ;;
+        esac
+    done
+}
+
+# 配置 ClouDNS 认证方式
+configure_cloudns_credentials() {
+    while true; do
+        show_cloudns_auth_menu
+        echo -e "${CYAN}请选择认证方式 [1-2]: ${NC}"
+        read -r cloudns_auth_choice
+        
+        case "$cloudns_auth_choice" in
+            1)
+                # 子用户 Auth ID 方式 (推荐)
+                echo
+                echo -e "${CYAN}ClouDNS 子用户 Auth ID 配置:${NC}"
+                echo -e "${CYAN}您需要在 ClouDNS 控制台创建子用户。${NC}"
+                echo -e "${CYAN}推荐使用子用户 Auth ID，因为它只能访问特定区域。${NC}"
+                echo
+                prompt_input "ClouDNS 子用户 Auth ID" "CLOUDNS_SUB_AUTH_ID" ""
+                prompt_password "ClouDNS 密码" "CLOUDNS_AUTH_PASSWORD" ""
+                
+                # 清除非推荐方式的配置
+                CLOUDNS_AUTH_ID=""
+                break
+                ;;
+            2)
+                # 常规 Auth ID 方式
+                echo
+                echo -e "${YELLOW}注意: 常规 Auth ID 可以访问您的整个账户，建议使用子用户 Auth ID。${NC}"
+                echo -e "${CYAN}您可以在 ClouDNS 控制台的 API 设置页面找到 Auth ID。${NC}"
+                echo
+                if prompt_yesno "确定要使用常规 Auth ID 方式吗?" "n"; then
+                    prompt_input "ClouDNS 常规 Auth ID" "CLOUDNS_AUTH_ID" ""
+                    prompt_password "ClouDNS 密码" "CLOUDNS_AUTH_PASSWORD" ""
+                    
+                    # 清除推荐方式的配置
+                    CLOUDNS_SUB_AUTH_ID=""
                     break
                 fi
                 ;;
@@ -803,6 +882,16 @@ validate_config() {
                 errors=$((errors + 1))
             fi
             ;;
+        cloudns)
+            if [ -z "$CLOUDNS_SUB_AUTH_ID" ] && [ -z "$CLOUDNS_AUTH_ID" ]; then
+                error "ClouDNS Auth ID 未设置"
+                errors=$((errors + 1))
+            fi
+            if [ -z "$CLOUDNS_AUTH_PASSWORD" ]; then
+                error "ClouDNS 密码未设置"
+                errors=$((errors + 1))
+            fi
+            ;;
         *)
             error "不支持的 DNS 提供商: $DNS_PROVIDER"
             errors=$((errors + 1))
@@ -861,6 +950,20 @@ show_config() {
                 echo "  • HE 密码: ${HE_PASSWORD:0:8}****"
             else
                 echo "  • HE 密码: 未设置"
+            fi
+            ;;
+        cloudns)
+            if [ -n "$CLOUDNS_SUB_AUTH_ID" ]; then
+                echo "  • ClouDNS 子用户 Auth ID: ${CLOUDNS_SUB_AUTH_ID:0:8}****"
+            elif [ -n "$CLOUDNS_AUTH_ID" ]; then
+                echo "  • ClouDNS 常规 Auth ID: ${CLOUDNS_AUTH_ID:0:8}****"
+            else
+                echo "  • ClouDNS Auth ID: 未设置"
+            fi
+            if [ -n "$CLOUDNS_AUTH_PASSWORD" ]; then
+                echo "  • ClouDNS 密码: ${CLOUDNS_AUTH_PASSWORD:0:8}****"
+            else
+                echo "  • ClouDNS 密码: 未设置"
             fi
             ;;
     esac
@@ -978,6 +1081,11 @@ LUA_EMAIL="$LUA_EMAIL"
 # Hurricane Electric配置
 HE_USERNAME="$HE_USERNAME"
 HE_PASSWORD="$HE_PASSWORD"
+
+# ClouDNS配置
+CLOUDNS_AUTH_ID="$CLOUDNS_AUTH_ID"
+CLOUDNS_SUB_AUTH_ID="$CLOUDNS_SUB_AUTH_ID"
+CLOUDNS_AUTH_PASSWORD="$CLOUDNS_AUTH_PASSWORD"
 
 # 证书路径配置
 CERT_PATH="$CERT_PATH"
@@ -1167,6 +1275,28 @@ setup_dns_provider() {
             export HE_Username="$HE_USERNAME"
             export HE_Password="$HE_PASSWORD"
             ;;
+            
+        cloudns)
+            {
+                grep -v "^CLOUDNS_AUTH_ID=" "$account_conf" 2>/dev/null || true
+                grep -v "^CLOUDNS_SUB_AUTH_ID=" "$account_conf" 2>/dev/null || true
+                grep -v "^CLOUDNS_AUTH_PASSWORD=" "$account_conf" 2>/dev/null || true
+                
+                if [ -n "$CLOUDNS_SUB_AUTH_ID" ]; then
+                    echo "CLOUDNS_SUB_AUTH_ID=$CLOUDNS_SUB_AUTH_ID"
+                elif [ -n "$CLOUDNS_AUTH_ID" ]; then
+                    echo "CLOUDNS_AUTH_ID=$CLOUDNS_AUTH_ID"
+                fi
+                echo "CLOUDNS_AUTH_PASSWORD=$CLOUDNS_AUTH_PASSWORD"
+            } > "${account_conf}.tmp" && mv "${account_conf}.tmp" "$account_conf"
+            
+            if [ -n "$CLOUDNS_SUB_AUTH_ID" ]; then
+                export CLOUDNS_SUB_AUTH_ID="$CLOUDNS_SUB_AUTH_ID"
+            elif [ -n "$CLOUDNS_AUTH_ID" ]; then
+                export CLOUDNS_AUTH_ID="$CLOUDNS_AUTH_ID"
+            fi
+            export CLOUDNS_AUTH_PASSWORD="$CLOUDNS_AUTH_PASSWORD"
+            ;;
     esac
     
     success "DNS 提供商配置完成"
@@ -1209,6 +1339,7 @@ issue_certificate() {
         cloudflare) dns_api="dns_cf" ;;
         luadns) dns_api="dns_lua" ;;
         he) dns_api="dns_he" ;;
+        cloudns) dns_api="dns_cloudns" ;;
     esac
     
     step "申请 SSL 证书"
@@ -1652,7 +1783,7 @@ certificate_issue_flow() {
 
 # 显示菜单
 show_menu() {
-    title "SSL 证书管理工具 By Prince 2025.10.15 "
+    title "SSL 证书管理工具   By Prince 2025.10 "
     echo -e "${GREEN}  1) [申请] 申请新证书${NC}"
     echo -e "${YELLOW}  2) [续期] 续期证书${NC}"
     echo -e "${YELLOW}  3) [批量续期] 续期所有证书${NC}"
@@ -1762,12 +1893,13 @@ show_help() {
     echo "  • CloudFlare (推荐)"
     echo "  • LuaDNS"
     echo "  • Hurricane Electric (HE)"
+    echo "  • ClouDNS"
     echo
     echo -e "${CYAN}支持的环境变量:${NC}"
     echo "  DOMAIN               证书域名"
     echo "  WILDCARD_DOMAIN      通配符域名"
     echo "  EMAIL                注册邮箱"
-    echo "  DNS_PROVIDER         DNS提供商: cloudflare, luadns 或 he"
+    echo "  DNS_PROVIDER         DNS提供商: cloudflare, luadns, he 或 cloudns"
     echo "  CF_Token             CloudFlare API Token (推荐)"
     echo "  CF_Zone_ID           CloudFlare Zone ID (可选)"
     echo "  CF_Account_ID        CloudFlare Account ID (可选)"
@@ -1777,18 +1909,25 @@ show_help() {
     echo "  LUA_EMAIL            LuaDNS 邮箱"
     echo "  HE_USERNAME          Hurricane Electric 用户名"
     echo "  HE_PASSWORD          Hurricane Electric 密码"
+    echo "  CLOUDNS_AUTH_ID      ClouDNS 常规 Auth ID"
+    echo "  CLOUDNS_SUB_AUTH_ID  ClouDNS 子用户 Auth ID (推荐)"
+    echo "  CLOUDNS_AUTH_PASSWORD ClouDNS 密码"
     echo "  CERT_PATH            证书输出路径"
     echo "  KEY_PATH             私钥输出路径"
     echo "  ACME_SERVER          ACME 服务器"
     echo "  POST_SCRIPT_CMD      后续命令"
     echo "  POST_SCRIPT_ENABLED  是否启用后续命令"
     echo
+    echo -e "${CYAN}ClouDNS 使用说明:${NC}"
+    echo "  推荐使用子用户 Auth ID，因为它只能访问特定区域，更安全。"
+    echo "  可以在 ClouDNS 控制台创建子用户并分配权限。"
+    echo
     echo -e "${CYAN}使用示例:${NC}"
     echo "  # 交互式菜单模式"
     echo "  ./ssl-manager.sh"
     echo
     echo "  # 一键申请证书 (使用环境变量或配置文件)"
-    echo "  DOMAIN=\"your-domain.com\" CF_Token=\"your_token\" ./ssl-manager.sh --issue"
+    echo "  DOMAIN=\"your-domain.com\" CLOUDNS_SUB_AUTH_ID=\"your_sub_auth_id\" CLOUDNS_AUTH_PASSWORD=\"your_password\" ./ssl-manager.sh --issue"
     echo
     echo "  # 保存配置后一键运行"
     echo "  ./ssl-manager.sh --quick"
