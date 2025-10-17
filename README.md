@@ -1,7 +1,6 @@
 # Acme-DNS SSL Certificate Manager  
 A powerful and user-friendly bash script for managing SSL certificates via `acme.sh` with DNS verification. Supports Debian/Ubuntu, Alpine Linux, and FreeBSD systems.
 
-
 ## VPS SSH Quick Start  
 Run these commands directly in your VPS SSH terminal to download, authorize, and launch the script:
 
@@ -26,6 +25,11 @@ wget https://raw.githubusercontent.com/Andeasw/Acme-DNS/main/Acme-DNS.sh -O Acme
   DOMAIN="example.com" CF_Token="your_token" ./Acme-DNS.sh --issue
   ```  
 
+- **Issue Certificate with ClouDNS**  
+  ```bash
+  DOMAIN="example.com" CLOUDNS_SUB_AUTH_ID="your_sub_auth_id" CLOUDNS_AUTH_PASSWORD="your_password" ./Acme-DNS.sh --issue
+  ```  
+
 - **Issue Wildcard Certificate**  
   ```bash
   DOMAIN="example.com" WILDCARD_DOMAIN="*.example.com" CF_Token="your_token" ./Acme-DNS.sh --issue
@@ -41,16 +45,14 @@ wget https://raw.githubusercontent.com/Andeasw/Acme-DNS/main/Acme-DNS.sh -O Acme
   ./Acme-DNS.sh --list
   ```  
 
-
 ## Features  
 
 ### 🔐 Automatic SSL Certificate Management  
 - Certificate issuance and renewal  
 - Wildcard certificate support (`*.example.com`)  
-- Multiple DNS providers (CloudFlare, LuaDNS, Hurricane Electric)  
+- Multiple DNS providers (CloudFlare, LuaDNS, Hurricane Electric, ClouDNS)  
 - Dual ACME server support (Let's Encrypt, ZeroSSL)  
 - RSA 2048 encryption standard  
-
 
 ### 🖥️ User-Friendly Interface  
 - Interactive menu system with color coding  
@@ -58,7 +60,6 @@ wget https://raw.githubusercontent.com/Andeasw/Acme-DNS/main/Acme-DNS.sh -O Acme
 - Input validation and error handling  
 - Progress indicators for long operations  
 - Configuration save/load functionality  
-
 
 ### 🔧 Advanced Management  
 - Single or bulk certificate renewal  
@@ -68,15 +69,14 @@ wget https://raw.githubusercontent.com/Andeasw/Acme-DNS/main/Acme-DNS.sh -O Acme
 - Post-installation script execution support  
 - Automatic dependency installation  
 
-
 ## Supported DNS Providers  
 
 | Provider                | Authentication Method                  | Recommended |
 |-------------------------|----------------------------------------|-------------|
 | CloudFlare              | API Token (recommended) or Global API Key | ✅          |
 | LuaDNS                  | API Key + Email                        | ✅          |
-| Hurricane Electric (HE) | Username + Password                    | ✅          |  
-
+| Hurricane Electric (HE) | Username + Password                    | ✅          |
+| ClouDNS                 | Sub-Auth ID (recommended) or Auth ID   | ✅          |
 
 ## Supported Systems  
 
@@ -85,8 +85,7 @@ wget https://raw.githubusercontent.com/Andeasw/Acme-DNS/main/Acme-DNS.sh -O Acme
 | Debian/Ubuntu    | apt-get         | ✅ Fully Supported   |
 | Alpine Linux     | apk             | ✅ Fully Supported   |
 | FreeBSD          | pkg             | ✅ Fully Supported   |
-| CentOS/RHEL      | yum             | ⚠️ Limited Support   |  
-
+| CentOS/RHEL      | yum             | ⚠️ Limited Support   |
 
 ## Usage Methods  
 
@@ -96,20 +95,17 @@ Launch the script and follow on-screen prompts:
 ./Acme-DNS.sh
 ```  
 
-
 ### Method 2: Quick Mode (One-Click)  
 Use saved configuration or environment variables:  
 ```bash
 ./Acme-DNS.sh --quick
 ```  
 
-
 ### Method 3: Direct Commands  
 Issue certificate with environment variables:  
 ```bash
 DOMAIN="example.com" CF_Token="your_token" ./Acme-DNS.sh --issue
 ```  
-
 
 ## Environment Variables  
 All configurations can be set via environment variables:  
@@ -123,11 +119,10 @@ CERT_PATH="/root/ssl/cert.pem"     # Path to save certificate
 KEY_PATH="/root/ssl/private.key"   # Path to save private key
 ```  
 
-
 ### DNS Provider Configuration  
 ```bash
 # Select one DNS provider
-DNS_PROVIDER="cloudflare"          # "cloudflare", "luadns", or "he"
+DNS_PROVIDER="cloudflare"          # "cloudflare", "luadns", "he", or "cloudns"
 
 # CloudFlare Configuration (recommended)
 CF_Token="your_api_token"          # API Token (recommended)
@@ -145,8 +140,15 @@ LUA_EMAIL="your_luadns_account_email"
 # Hurricane Electric Configuration  
 HE_USERNAME="your_he_username"
 HE_PASSWORD="your_he_password"
-```  
 
+# ClouDNS Configuration (recommended)
+CLOUDNS_SUB_AUTH_ID="your_sub_auth_id"    # Sub-Auth ID (recommended)
+CLOUDNS_AUTH_PASSWORD="your_password"
+
+# ClouDNS Legacy Configuration
+CLOUDNS_AUTH_ID="your_auth_id"            # Regular Auth ID
+CLOUDNS_AUTH_PASSWORD="your_password"
+```  
 
 ### Advanced Configuration  
 ```bash
@@ -157,7 +159,6 @@ ACME_SERVER="letsencrypt"          # "letsencrypt" or "zerossl"
 POST_SCRIPT_CMD="systemctl reload nginx"  # Example: Reload web server
 POST_SCRIPT_ENABLED="true"                # Enable/disable post-script
 ```  
-
 
 ## Usage Examples  
 
@@ -179,7 +180,6 @@ POST_SCRIPT_ENABLED="true"                # Enable/disable post-script
 ./Acme-DNS.sh --show
 ```  
 
-
 ### Management Commands  
 ```bash
 # Remove a certificate
@@ -195,24 +195,33 @@ POST_SCRIPT_ENABLED="true"                # Enable/disable post-script
 ./Acme-DNS.sh --help
 ```  
 
-
 ### Practical One-Click Examples  
 1. **Quick CloudFlare Setup**  
    ```bash
    DOMAIN="example.com" CF_Token="your_token" ./Acme-DNS.sh --quick
    ```  
 
-2. **Wildcard Certificate with CloudFlare**  
+2. **Quick ClouDNS Setup**  
+   ```bash
+   DOMAIN="example.com" CLOUDNS_SUB_AUTH_ID="your_sub_auth_id" CLOUDNS_AUTH_PASSWORD="your_password" ./Acme-DNS.sh --quick
+   ```  
+
+3. **Wildcard Certificate with CloudFlare**  
    ```bash
    DOMAIN="example.com" WILDCARD_DOMAIN="*.example.com" CF_Token="your_token" ./Acme-DNS.sh --issue
    ```  
 
-3. **LuaDNS Certificate**  
+4. **LuaDNS Certificate**  
    ```bash
    DOMAIN="example.com" LUA_KEY="your_key" LUA_EMAIL="admin@example.com" ./Acme-DNS.sh --issue
    ```  
 
-4. **Save Configuration for Future Use**  
+5. **ClouDNS Wildcard Certificate**  
+   ```bash
+   DOMAIN="example.com" WILDCARD_DOMAIN="*.example.com" CLOUDNS_SUB_AUTH_ID="your_sub_auth_id" CLOUDNS_AUTH_PASSWORD="your_password" ./Acme-DNS.sh --issue
+   ```  
+
+6. **Save Configuration for Future Use**  
    ```bash
    # First time: configure interactively, then save
    ./Acme-DNS.sh
@@ -221,6 +230,23 @@ POST_SCRIPT_ENABLED="true"                # Enable/disable post-script
    ./Acme-DNS.sh --quick
    ```  
 
+## ClouDNS Configuration Guide
+
+### Getting ClouDNS Credentials
+1. **Log in to ClouDNS Control Panel**
+2. **For Sub-Auth ID (Recommended):**
+   - Go to **Sub Users** section
+   - Create a new sub user with limited permissions
+   - Use the generated **Sub-Auth ID** and set a password
+
+3. **For Regular Auth ID:**
+   - Go to **API Settings** 
+   - Find your **Auth ID** and set an **Auth Password**
+
+### Security Recommendations
+- ✅ **Use Sub-Auth ID** - Limited to specific zones only
+- ❌ **Avoid Regular Auth ID** - Has access to entire account
+- 🔒 **Use Strong Passwords** - For both Auth ID and Sub-Auth ID
 
 ## System Requirements  
 
@@ -230,8 +256,7 @@ POST_SCRIPT_ENABLED="true"                # Enable/disable post-script
 | Dependencies | `curl`, `openssl` (auto-installed)               |
 | Recommended  | `socat`, `cron` (auto-installed if needed)       |
 | Shell        | Bash (v4.0+)                                     |
-| Disk Space   | ~100MB for `acme.sh` and certificates            |  
-
+| Disk Space   | ~100MB for `acme.sh` and certificates            |
 
 ## Installation  
 
@@ -240,7 +265,6 @@ POST_SCRIPT_ENABLED="true"                # Enable/disable post-script
 # Download and run in one command
 bash <(curl -fsSL https://raw.githubusercontent.com/Andeasw/Acme-DNS/main/Acme-DNS.sh)
 ```  
-
 
 ### Manual Installation  
 ```bash
@@ -253,7 +277,6 @@ chmod +x Acme-DNS.sh
 # Run interactive mode
 ./Acme-DNS.sh
 ```  
-
 
 ## Interactive Menu Options  
 The script provides a comprehensive interactive menu:  
@@ -271,7 +294,6 @@ The script provides a comprehensive interactive menu:
 - ❓ **Help** - Display usage documentation  
 - 🚪 **Exit** - Quit the script  
 
-
 ## Configuration Management  
 
 ### Save Configuration  
@@ -280,13 +302,11 @@ After setting up your preferences, save them for future use:
 # Configuration will be saved to ./ssl-manager.conf
 ```  
 
-
 ### Load Saved Configuration  
 ```bash
 # Automatically loads from ./ssl-manager.conf in quick mode
 ./Acme-DNS.sh --quick
 ```  
-
 
 ## Notes  
 - ✅ **Automatic Dependency Handling** - Missing packages are automatically detected and installed  
@@ -296,7 +316,7 @@ After setting up your preferences, save them for future use:
 - ✅ **Wildcard Support** - Full support for `*.example.com` certificates  
 - ✅ **Security Focused** - Uses API tokens instead of global keys when possible  
 - ✅ **Configuration Persistence** - Save settings for one-click future use  
-
+- ✅ **Multiple DNS Providers** - CloudFlare, LuaDNS, Hurricane Electric, and ClouDNS support  
 
 ## Troubleshooting  
 
@@ -322,10 +342,13 @@ chmod +x Acme-DNS.sh
 # FreeBSD: pkg install curl openssl socat
 ```  
 
+#### ClouDNS Authentication Issues
+- Ensure you're using the correct Auth ID type (Sub-Auth ID vs Regular Auth ID)
+- Verify your Auth Password is correct
+- Check that the sub-user has proper permissions for the domain zone
 
 ## License  
 This project is open-source. Feel free to use, modify, and distribute as needed.  
-
 
 ## Support  
 For issues and feature requests, please open an issue on the GitHub repository.
