@@ -3,7 +3,8 @@
 # RSA 2048 证书管理脚本 (acme.sh + CloudFlare/LuaDNS/Hurricane Electric/ClouDNS)
 # 支持 Debian、Alpine 和 FreeBSD 系统
 # 支持证书申请、续期、管理和卸载
-# By Prince 2025.10.17
+# 支持 DNS、HTTP-80、TLS-443 验证方式
+# By Prince 2025.10.18
 # ===========================================
 
 set -e
@@ -40,6 +41,12 @@ CLOUDNS_AUTH_PASSWORD="${CLOUDNS_AUTH_PASSWORD:-}"
 
 # ACME 配置
 ACME_SERVER="${ACME_SERVER:-letsencrypt}"
+
+# 验证方式配置
+VALIDATION_METHOD="${VALIDATION_METHOD:-dns}"  # dns, http, tls
+HTTP_PORT="${HTTP_PORT:-80}"  # HTTP 验证端口
+TLS_PORT="${TLS_PORT:-443}"   # TLS 验证端口
+SKIP_PORT_CHECK="${SKIP_PORT_CHECK:-false}"  # 跳过端口检查
 
 # 后续脚本命令
 POST_SCRIPT_CMD="${POST_SCRIPT_CMD:-}"
@@ -168,6 +175,51 @@ detect_os() {
     info "检测到系统: $OS_TYPE, 包管理器: $PKG_MANAGER"
 }
 
+# 检查端口占用
+check_port_usage() {
+    local port=$1
+    local protocol=${2:-tcp}
+    
+    # 检查端口是否被占用
+    if command -v netstat >/dev/null 2>&1; then
+        if netstat -tuln 2>/dev/null | grep -q ":${port} "; then
+            return 0  # 端口被占用
+        fi
+    elif command -v ss >/dev/null 2>&1; then
+        if ss -tuln 2>/dev/null | grep -q ":${port} "; then
+            return 0  # 端口被占用
+        fi
+    elif command -v sockstat >/dev/null 2>&1; then
+        if sockstat -l 2>/dev/null | grep -q ":${port} "; then
+            return 0  # 端口被占用
+        fi
+    fi
+    
+    return 1  # 端口空闲
+}
+
+# 检查端口可访问性
+check_port_accessibility() {
+    local port=$1
+    local timeout=3
+    
+    # 尝试绑定端口测试
+    if command -v nc >/dev/null 2>&1; then
+        if nc -z 127.0.0.1 $port >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+    
+    # 简单的telnet测试
+    if command -v telnet >/dev/null 2>&1; then
+        if (echo "quit" | telnet 127.0.0.1 $port 2>/dev/null | grep -q "Connected"); then
+            return 0
+        fi
+    fi
+    
+    return 1
+}
+
 # 检查并安装依赖
 check_dependencies() {
     step "检查系统依赖"
@@ -178,6 +230,11 @@ check_dependencies() {
     # 检测必需的命令
     local required_cmds="curl openssl"
     local recommended_cmds="socat cron"
+    
+    # 根据验证方式调整依赖
+    if [ "$VALIDATION_METHOD" = "http" ] || [ "$VALIDATION_METHOD" = "tls" ]; then
+        recommended_cmds="$recommended_cmds nc"
+    fi
     
     for cmd in $required_cmds; do
         if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -245,6 +302,9 @@ check_dependencies() {
         echo -e "${YELLOW}建议安装这些依赖以获得完整功能:${NC}"
         echo -e "${YELLOW}  - socat: 用于 standalone 模式验证${NC}"
         echo -e "${YELLOW}  - cron: 用于自动证书续期${NC}"
+        if [ "$VALIDATION_METHOD" = "http" ] || [ "$VALIDATION_METHOD" = "tls" ]; then
+            echo -e "${YELLOW}  - nc (netcat): 用于端口检查${NC}"
+        fi
         echo
         
         if [ -n "$PKG_MANAGER" ]; then
@@ -259,6 +319,15 @@ check_dependencies() {
                                 pkg_name="dcron"
                             elif [ "$OS_TYPE" = "freebsd" ]; then
                                 pkg_name="cronie"
+                            fi
+                            ;;
+                        nc)
+                            if [ "$OS_TYPE" = "alpine" ]; then
+                                pkg_name="netcat-openbsd"
+                            elif [ "$OS_TYPE" = "debian" ]; then
+                                pkg_name="netcat"
+                            elif [ "$OS_TYPE" = "freebsd" ]; then
+                                pkg_name="netcat"
                             fi
                             ;;
                     esac
@@ -405,6 +474,15 @@ show_acme_menu() {
     echo
 }
 
+show_validation_menu() {
+    echo
+    echo -e "${CYAN}请选择验证方式:${NC}"
+    echo "  1) DNS 验证 (支持通配符证书)"
+    echo "  2) HTTP 验证 (80端口)"
+    echo "  3) TLS 验证 (443端口)"
+    echo
+}
+
 show_cf_auth_menu() {
     echo
     echo -e "${CYAN}请选择 CloudFlare 认证方式:${NC}"
@@ -431,6 +509,61 @@ go_back() {
     fi
 }
 
+# 配置验证方式
+configure_validation_method() {
+    step "选择证书验证方式"
+    
+    # 如果申请通配符证书，只能使用 DNS 验证
+    if [ -n "$WILDCARD_DOMAIN" ]; then
+        info "通配符证书只能使用 DNS 验证方式"
+        VALIDATION_METHOD="dns"
+        return 0
+    fi
+    
+    while true; do
+        show_validation_menu
+        echo -e "${CYAN}请选择验证方式 [1-3]: ${NC}"
+        read -r validation_choice
+        
+        case "$validation_choice" in
+            1)
+                VALIDATION_METHOD="dns"
+                info "已选择 DNS 验证方式"
+                break
+                ;;
+            2)
+                VALIDATION_METHOD="http"
+                info "已选择 HTTP 验证方式 (80端口)"
+                
+                # 检查端口占用
+                if [ "$SKIP_PORT_CHECK" != "true" ] && check_port_usage 80; then
+                    warn "80端口可能被占用，验证可能失败"
+                    if ! prompt_yesno "是否继续?" "y"; then
+                        continue
+                    fi
+                fi
+                break
+                ;;
+            3)
+                VALIDATION_METHOD="tls"
+                info "已选择 TLS 验证方式 (443端口)"
+                
+                # 检查端口占用
+                if [ "$SKIP_PORT_CHECK" != "true" ] && check_port_usage 443; then
+                    warn "443端口可能被占用，验证可能失败"
+                    if ! prompt_yesno "是否继续?" "y"; then
+                        continue
+                    fi
+                fi
+                break
+                ;;
+            *)
+                error "无效选择，请输入 1-3 之间的数字"
+                ;;
+        esac
+    done
+}
+
 # 配置模式选择
 select_config_mode() {
     title "SSL证书配置"
@@ -440,20 +573,22 @@ select_config_mode() {
     
     if [ -z "$DOMAIN" ] || [ -z "$EMAIL" ]; then
         has_complete_config=false
-    elif [ "$DNS_PROVIDER" = "cloudflare" ]; then
-        if [ -z "$CF_Token" ] && [ -z "$CF_Key" ]; then
+    elif [ "$VALIDATION_METHOD" = "dns" ]; then
+        if [ "$DNS_PROVIDER" = "cloudflare" ]; then
+            if [ -z "$CF_Token" ] && [ -z "$CF_Key" ]; then
+                has_complete_config=false
+            fi
+        elif [ "$DNS_PROVIDER" = "luadns" ] && [ -z "$LUA_KEY" ]; then
             has_complete_config=false
-        fi
-    elif [ "$DNS_PROVIDER" = "luadns" ] && [ -z "$LUA_KEY" ]; then
-        has_complete_config=false
-    elif [ "$DNS_PROVIDER" = "he" ] && [ -z "$HE_USERNAME" ]; then
-        has_complete_config=false
-    elif [ "$DNS_PROVIDER" = "cloudns" ]; then
-        if [ -z "$CLOUDNS_SUB_AUTH_ID" ] && [ -z "$CLOUDNS_AUTH_ID" ]; then
+        elif [ "$DNS_PROVIDER" = "he" ] && [ -z "$HE_USERNAME" ]; then
             has_complete_config=false
-        fi
-        if [ -z "$CLOUDNS_AUTH_PASSWORD" ]; then
-            has_complete_config=false
+        elif [ "$DNS_PROVIDER" = "cloudns" ]; then
+            if [ -z "$CLOUDNS_SUB_AUTH_ID" ] && [ -z "$CLOUDNS_AUTH_ID" ]; then
+                has_complete_config=false
+            fi
+            if [ -z "$CLOUDNS_AUTH_PASSWORD" ]; then
+                has_complete_config=false
+            fi
         fi
     fi
     
@@ -520,40 +655,52 @@ quick_config() {
         prompt_input "邮箱地址" "EMAIL" "$default_email"
     fi
     
-    # DNS提供商配置
-    if [ -z "$DNS_PROVIDER" ]; then
-        step "DNS提供商配置"
-        configure_dns_provider
+    # 验证方式配置
+    if [ -z "$VALIDATION_METHOD" ]; then
+        configure_validation_method
     else
-        info "当前DNS提供商: $DNS_PROVIDER"
-        if prompt_yesno "是否需要修改DNS提供商配置?" "n"; then
+        info "当前验证方式: $VALIDATION_METHOD"
+        if prompt_yesno "是否需要修改验证方式?" "n"; then
+            configure_validation_method
+        fi
+    fi
+    
+    # DNS提供商配置（仅在DNS验证时需要）
+    if [ "$VALIDATION_METHOD" = "dns" ]; then
+        if [ -z "$DNS_PROVIDER" ]; then
+            step "DNS提供商配置"
             configure_dns_provider
         else
-            # 检查当前DNS提供商的配置是否完整
-            case "$DNS_PROVIDER" in
-                cloudflare)
-                    configure_cloudflare_credentials
-                    ;;
-                luadns)
-                    if [ -z "$LUA_KEY" ]; then
-                        prompt_input "LuaDNS API Key" "LUA_KEY" ""
-                    fi
-                    if [ -z "$LUA_EMAIL" ]; then
-                        prompt_input "LuaDNS 邮箱" "LUA_EMAIL" "$EMAIL"
-                    fi
-                    ;;
-                he)
-                    if [ -z "$HE_USERNAME" ]; then
-                        prompt_input "HE 用户名" "HE_USERNAME" ""
-                    fi
-                    if [ -z "$HE_PASSWORD" ]; then
-                        prompt_password "HE 密码" "HE_PASSWORD" ""
-                    fi
-                    ;;
-                cloudns)
-                    configure_cloudns_credentials
-                    ;;
-            esac
+            info "当前DNS提供商: $DNS_PROVIDER"
+            if prompt_yesno "是否需要修改DNS提供商配置?" "n"; then
+                configure_dns_provider
+            else
+                # 检查当前DNS提供商的配置是否完整
+                case "$DNS_PROVIDER" in
+                    cloudflare)
+                        configure_cloudflare_credentials
+                        ;;
+                    luadns)
+                        if [ -z "$LUA_KEY" ]; then
+                            prompt_input "LuaDNS API Key" "LUA_KEY" ""
+                        fi
+                        if [ -z "$LUA_EMAIL" ]; then
+                            prompt_input "LuaDNS 邮箱" "LUA_EMAIL" "$EMAIL"
+                        fi
+                        ;;
+                    he)
+                        if [ -z "$HE_USERNAME" ]; then
+                            prompt_input "HE 用户名" "HE_USERNAME" ""
+                        fi
+                        if [ -z "$HE_PASSWORD" ]; then
+                            prompt_password "HE 密码" "HE_PASSWORD" ""
+                        fi
+                        ;;
+                    cloudns)
+                        configure_cloudns_credentials
+                        ;;
+                esac
+            fi
         fi
     fi
     
@@ -597,6 +744,7 @@ full_config() {
     DOMAIN=""
     WILDCARD_DOMAIN=""
     EMAIL=""
+    VALIDATION_METHOD=""
     DNS_PROVIDER=""
     CF_Token=""
     CF_Zone_ID=""
@@ -636,9 +784,14 @@ full_config() {
         prompt_input "邮箱地址" "EMAIL" "$default_email"
     fi
     
-    # DNS提供商配置
-    step "DNS提供商配置"
-    configure_dns_provider
+    # 验证方式配置
+    configure_validation_method
+    
+    # DNS提供商配置（仅在DNS验证时需要）
+    if [ "$VALIDATION_METHOD" = "dns" ]; then
+        step "DNS提供商配置"
+        configure_dns_provider
+    fi
     
     # 证书路径配置
     step "证书路径配置"
@@ -852,51 +1005,76 @@ validate_config() {
         errors=$((errors + 1))
     fi
     
-    case "$DNS_PROVIDER" in
-        cloudflare)
-            if [ -z "$CF_Token" ] && [ -z "$CF_Key" ]; then
-                error "CloudFlare 认证信息未设置"
+    if [ -z "$VALIDATION_METHOD" ]; then
+        error "验证方式未设置"
+        errors=$((errors + 1))
+    fi
+    
+    # DNS验证需要DNS提供商配置
+    if [ "$VALIDATION_METHOD" = "dns" ]; then
+        case "$DNS_PROVIDER" in
+            cloudflare)
+                if [ -z "$CF_Token" ] && [ -z "$CF_Key" ]; then
+                    error "CloudFlare 认证信息未设置"
+                    errors=$((errors + 1))
+                fi
+                if [ -n "$CF_Key" ] && [ -z "$CF_Email" ]; then
+                    error "使用全局 API Key 时需要设置邮箱"
+                    errors=$((errors + 1))
+                fi
+                ;;
+            luadns)
+                if [ -z "$LUA_KEY" ]; then
+                    error "LuaDNS API Key 未设置"
+                    errors=$((errors + 1))
+                fi
+                if [ -z "$LUA_EMAIL" ]; then
+                    LUA_EMAIL="$EMAIL"
+                fi
+                ;;
+            he)
+                if [ -z "$HE_USERNAME" ]; then
+                    error "HE 用户名未设置"
+                    errors=$((errors + 1))
+                fi
+                if [ -z "$HE_PASSWORD" ]; then
+                    error "HE 密码未设置"
+                    errors=$((errors + 1))
+                fi
+                ;;
+            cloudns)
+                if [ -z "$CLOUDNS_SUB_AUTH_ID" ] && [ -z "$CLOUDNS_AUTH_ID" ]; then
+                    error "ClouDNS Auth ID 未设置"
+                    errors=$((errors + 1))
+                fi
+                if [ -z "$CLOUDNS_AUTH_PASSWORD" ]; then
+                    error "ClouDNS 密码未设置"
+                    errors=$((errors + 1))
+                fi
+                ;;
+            *)
+                error "不支持的 DNS 提供商: $DNS_PROVIDER"
+                errors=$((errors + 1))
+                ;;
+        esac
+    fi
+    
+    # HTTP/TLS验证需要检查端口
+    if [ "$VALIDATION_METHOD" = "http" ] || [ "$VALIDATION_METHOD" = "tls" ]; then
+        local port=""
+        if [ "$VALIDATION_METHOD" = "http" ]; then
+            port=80
+        else
+            port=443
+        fi
+        
+        if [ "$SKIP_PORT_CHECK" != "true" ] && check_port_usage $port; then
+            warn "端口 $port 可能被占用，验证可能失败"
+            if ! prompt_yesno "是否继续?" "y"; then
                 errors=$((errors + 1))
             fi
-            if [ -n "$CF_Key" ] && [ -z "$CF_Email" ]; then
-                error "使用全局 API Key 时需要设置邮箱"
-                errors=$((errors + 1))
-            fi
-            ;;
-        luadns)
-            if [ -z "$LUA_KEY" ]; then
-                error "LuaDNS API Key 未设置"
-                errors=$((errors + 1))
-            fi
-            if [ -z "$LUA_EMAIL" ]; then
-                LUA_EMAIL="$EMAIL"
-            fi
-            ;;
-        he)
-            if [ -z "$HE_USERNAME" ]; then
-                error "HE 用户名未设置"
-                errors=$((errors + 1))
-            fi
-            if [ -z "$HE_PASSWORD" ]; then
-                error "HE 密码未设置"
-                errors=$((errors + 1))
-            fi
-            ;;
-        cloudns)
-            if [ -z "$CLOUDNS_SUB_AUTH_ID" ] && [ -z "$CLOUDNS_AUTH_ID" ]; then
-                error "ClouDNS Auth ID 未设置"
-                errors=$((errors + 1))
-            fi
-            if [ -z "$CLOUDNS_AUTH_PASSWORD" ]; then
-                error "ClouDNS 密码未设置"
-                errors=$((errors + 1))
-            fi
-            ;;
-        *)
-            error "不支持的 DNS 提供商: $DNS_PROVIDER"
-            errors=$((errors + 1))
-            ;;
-    esac
+        fi
+    fi
     
     if [ $errors -gt 0 ]; then
         error "发现 $errors 个配置错误，请检查后重试"
@@ -915,58 +1093,69 @@ show_config() {
         echo "  • 通配符域名: $WILDCARD_DOMAIN"
     fi
     echo "  • 邮箱: ${EMAIL:-未设置}"
+    echo "  • 验证方式: ${VALIDATION_METHOD:-未设置}"
     
-    echo -e "${CYAN}DNS配置:${NC}"
-    echo "  • DNS提供商: ${DNS_PROVIDER:-未设置}"
-    
-    case "$DNS_PROVIDER" in
-        cloudflare)
-            if [ -n "$CF_Token" ]; then
-                echo "  • CloudFlare Token: ${CF_Token:0:8}**** (API Token)"
-                if [ -n "$CF_Zone_ID" ]; then
-                    echo "  • Zone ID: $CF_Zone_ID"
+    if [ "$VALIDATION_METHOD" = "dns" ]; then
+        echo -e "${CYAN}DNS配置:${NC}"
+        echo "  • DNS提供商: ${DNS_PROVIDER:-未设置}"
+        
+        case "$DNS_PROVIDER" in
+            cloudflare)
+                if [ -n "$CF_Token" ]; then
+                    echo "  • CloudFlare Token: ${CF_Token:0:8}**** (API Token)"
+                    if [ -n "$CF_Zone_ID" ]; then
+                        echo "  • Zone ID: $CF_Zone_ID"
+                    fi
+                    if [ -n "$CF_Account_ID" ]; then
+                        echo "  • Account ID: $CF_Account_ID"
+                    fi
+                elif [ -n "$CF_Key" ]; then
+                    echo "  • CloudFlare Key: ${CF_Key:0:8}**** (全局 API Key)"
+                    echo "  • CloudFlare 邮箱: $CF_Email"
+                else
+                    echo "  • CloudFlare 认证: 未设置"
                 fi
-                if [ -n "$CF_Account_ID" ]; then
-                    echo "  • Account ID: $CF_Account_ID"
+                ;;
+            luadns)
+                if [ -n "$LUA_KEY" ]; then
+                    echo "  • LuaDNS Key: ${LUA_KEY:0:8}****"
+                else
+                    echo "  • LuaDNS Key: 未设置"
                 fi
-            elif [ -n "$CF_Key" ]; then
-                echo "  • CloudFlare Key: ${CF_Key:0:8}**** (全局 API Key)"
-                echo "  • CloudFlare 邮箱: $CF_Email"
-            else
-                echo "  • CloudFlare 认证: 未设置"
-            fi
-            ;;
-        luadns)
-            if [ -n "$LUA_KEY" ]; then
-                echo "  • LuaDNS Key: ${LUA_KEY:0:8}****"
-            else
-                echo "  • LuaDNS Key: 未设置"
-            fi
-            echo "  • LuaDNS 邮箱: ${LUA_EMAIL:-未设置}"
-            ;;
-        he)
-            echo "  • HE 用户名: ${HE_USERNAME:-未设置}"
-            if [ -n "$HE_PASSWORD" ]; then
-                echo "  • HE 密码: ${HE_PASSWORD:0:8}****"
-            else
-                echo "  • HE 密码: 未设置"
-            fi
-            ;;
-        cloudns)
-            if [ -n "$CLOUDNS_SUB_AUTH_ID" ]; then
-                echo "  • ClouDNS 子用户 Auth ID: ${CLOUDNS_SUB_AUTH_ID:0:8}****"
-            elif [ -n "$CLOUDNS_AUTH_ID" ]; then
-                echo "  • ClouDNS 常规 Auth ID: ${CLOUDNS_AUTH_ID:0:8}****"
-            else
-                echo "  • ClouDNS Auth ID: 未设置"
-            fi
-            if [ -n "$CLOUDNS_AUTH_PASSWORD" ]; then
-                echo "  • ClouDNS 密码: ${CLOUDNS_AUTH_PASSWORD:0:8}****"
-            else
-                echo "  • ClouDNS 密码: 未设置"
-            fi
-            ;;
-    esac
+                echo "  • LuaDNS 邮箱: ${LUA_EMAIL:-未设置}"
+                ;;
+            he)
+                echo "  • HE 用户名: ${HE_USERNAME:-未设置}"
+                if [ -n "$HE_PASSWORD" ]; then
+                    echo "  • HE 密码: ${HE_PASSWORD:0:8}****"
+                else
+                    echo "  • HE 密码: 未设置"
+                fi
+                ;;
+            cloudns)
+                if [ -n "$CLOUDNS_SUB_AUTH_ID" ]; then
+                    echo "  • ClouDNS 子用户 Auth ID: ${CLOUDNS_SUB_AUTH_ID:0:8}****"
+                elif [ -n "$CLOUDNS_AUTH_ID" ]; then
+                    echo "  • ClouDNS 常规 Auth ID: ${CLOUDNS_AUTH_ID:0:8}****"
+                else
+                    echo "  • ClouDNS Auth ID: 未设置"
+                fi
+                if [ -n "$CLOUDNS_AUTH_PASSWORD" ]; then
+                    echo "  • ClouDNS 密码: ${CLOUDNS_AUTH_PASSWORD:0:8}****"
+                else
+                    echo "  • ClouDNS 密码: 未设置"
+                fi
+                ;;
+        esac
+    elif [ "$VALIDATION_METHOD" = "http" ]; then
+        echo -e "${CYAN}HTTP验证配置:${NC}"
+        echo "  • 验证端口: $HTTP_PORT"
+        echo "  • 注意: 需要确保80端口可访问且未被占用"
+    elif [ "$VALIDATION_METHOD" = "tls" ]; then
+        echo -e "${CYAN}TLS验证配置:${NC}"
+        echo "  • 验证端口: $TLS_PORT"
+        echo "  • 注意: 需要确保443端口可访问且未被占用"
+    fi
     
     echo -e "${CYAN}证书配置:${NC}"
     echo "  • 证书路径: ${CERT_PATH:-未设置}"
@@ -989,14 +1178,17 @@ modify_config() {
         
         echo -e "${CYAN}请选择要修改的配置:${NC}"
         echo "  1) 域名配置"
-        echo "  2) DNS提供商配置"
-        echo "  3) 证书路径配置"
-        echo "  4) ACME服务器配置"
-        echo "  5) 后续脚本配置"
-        echo "  6) 返回主菜单"
+        echo "  2) 验证方式配置"
+        if [ "$VALIDATION_METHOD" = "dns" ]; then
+            echo "  3) DNS提供商配置"
+        fi
+        echo "  4) 证书路径配置"
+        echo "  5) ACME服务器配置"
+        echo "  6) 后续脚本配置"
+        echo "  7) 返回主菜单"
         echo
         
-        echo -e "${CYAN}请选择 [1-6]: ${NC}"
+        echo -e "${CYAN}请选择 [1-7]: ${NC}"
         read -r choice
         
         case "$choice" in
@@ -1011,19 +1203,27 @@ modify_config() {
                 prompt_input "邮箱地址" "EMAIL" "$EMAIL"
                 ;;
             2)
-                step "修改DNS提供商配置"
-                configure_dns_provider
+                step "修改验证方式配置"
+                configure_validation_method
                 ;;
             3)
+                if [ "$VALIDATION_METHOD" = "dns" ]; then
+                    step "修改DNS提供商配置"
+                    configure_dns_provider
+                else
+                    error "当前验证方式不是DNS，无需配置DNS提供商"
+                fi
+                ;;
+            4)
                 step "修改证书路径配置"
                 prompt_input "证书文件保存路径" "CERT_PATH" "$CERT_PATH"
                 prompt_input "私钥文件保存路径" "KEY_PATH" "$KEY_PATH"
                 ;;
-            4)
+            5)
                 step "修改ACME服务器配置"
                 configure_acme_server
                 ;;
-            5)
+            6)
                 step "修改后续脚本配置"
                 if prompt_yesno "是否启用后续脚本?" "n"; then
                     POST_SCRIPT_ENABLED="true"
@@ -1033,12 +1233,12 @@ modify_config() {
                     POST_SCRIPT_CMD=""
                 fi
                 ;;
-            6)
+            7)
                 info "返回主菜单"
                 return 0
                 ;;
             *)
-                error "无效选择，请输入 1-6 之间的数字"
+                error "无效选择，请输入 1-7 之间的数字"
                 ;;
         esac
         
@@ -1063,6 +1263,12 @@ save_config() {
 DOMAIN="$DOMAIN"
 WILDCARD_DOMAIN="$WILDCARD_DOMAIN"
 EMAIL="$EMAIL"
+
+# 验证方式配置
+VALIDATION_METHOD="$VALIDATION_METHOD"
+HTTP_PORT="$HTTP_PORT"
+TLS_PORT="$TLS_PORT"
+SKIP_PORT_CHECK="$SKIP_PORT_CHECK"
 
 # DNS提供商配置
 DNS_PROVIDER="$DNS_PROVIDER"
@@ -1333,16 +1539,7 @@ issue_certificate() {
         info "包含通配符域名: $WILDCARD_DOMAIN"
     fi
     
-    # 确定 DNS API 名称
-    local dns_api
-    case "$DNS_PROVIDER" in
-        cloudflare) dns_api="dns_cf" ;;
-        luadns) dns_api="dns_lua" ;;
-        he) dns_api="dns_he" ;;
-        cloudns) dns_api="dns_cloudns" ;;
-    esac
-    
-    step "申请 SSL 证书"
+    step "申请 SSL 证书 (验证方式: $VALIDATION_METHOD)"
     
     while [ $retry_count -lt $max_retries ]; do
         retry_count=$((retry_count + 1))
@@ -1353,11 +1550,39 @@ issue_certificate() {
         fi
         
         info "正在申请证书 (尝试 $retry_count/$max_retries)"
-        if "$ACME_HOME/acme.sh" --issue --dns "$dns_api" $domain_args \
-            --keylength 2048 --force; then
-            success "证书申请成功"
-            return 0
-        fi
+        
+        case "$VALIDATION_METHOD" in
+            dns)
+                # 确定 DNS API 名称
+                local dns_api
+                case "$DNS_PROVIDER" in
+                    cloudflare) dns_api="dns_cf" ;;
+                    luadns) dns_api="dns_lua" ;;
+                    he) dns_api="dns_he" ;;
+                    cloudns) dns_api="dns_cloudns" ;;
+                esac
+                
+                if "$ACME_HOME/acme.sh" --issue --dns "$dns_api" $domain_args \
+                    --keylength 2048 --force; then
+                    success "证书申请成功"
+                    return 0
+                fi
+                ;;
+            http)
+                if "$ACME_HOME/acme.sh" --issue --standalone $domain_args \
+                    --httpport "$HTTP_PORT" --keylength 2048 --force; then
+                    success "证书申请成功"
+                    return 0
+                fi
+                ;;
+            tls)
+                if "$ACME_HOME/acme.sh" --issue --standalone $domain_args \
+                    --tlsport "$TLS_PORT" --keylength 2048 --force; then
+                    success "证书申请成功"
+                    return 0
+                fi
+                ;;
+        esac
     done
     
     # 尝试备用服务器
@@ -1365,11 +1590,37 @@ issue_certificate() {
         warn "Let's Encrypt 申请失败，尝试 ZeroSSL..."
         "$ACME_HOME/acme.sh" --set-default-ca --server zerossl >/dev/null 2>&1
         
-        if "$ACME_HOME/acme.sh" --issue --dns "$dns_api" $domain_args \
-            --keylength 2048 --force; then
-            success "使用 ZeroSSL 申请证书成功"
-            return 0
-        fi
+        case "$VALIDATION_METHOD" in
+            dns)
+                local dns_api
+                case "$DNS_PROVIDER" in
+                    cloudflare) dns_api="dns_cf" ;;
+                    luadns) dns_api="dns_lua" ;;
+                    he) dns_api="dns_he" ;;
+                    cloudns) dns_api="dns_cloudns" ;;
+                esac
+                
+                if "$ACME_HOME/acme.sh" --issue --dns "$dns_api" $domain_args \
+                    --keylength 2048 --force; then
+                    success "使用 ZeroSSL 申请证书成功"
+                    return 0
+                fi
+                ;;
+            http)
+                if "$ACME_HOME/acme.sh" --issue --standalone $domain_args \
+                    --httpport "$HTTP_PORT" --keylength 2048 --force; then
+                    success "使用 ZeroSSL 申请证书成功"
+                    return 0
+                fi
+                ;;
+            tls)
+                if "$ACME_HOME/acme.sh" --issue --standalone $domain_args \
+                    --tlsport "$TLS_PORT" --keylength 2048 --force; then
+                    success "使用 ZeroSSL 申请证书成功"
+                    return 0
+                fi
+                ;;
+        esac
     fi
     
     fatal "所有证书申请尝试都失败"
@@ -1470,6 +1721,7 @@ execute_post_script() {
         export SSL_EMAIL="$EMAIL"
         export SSL_WILDCARD_DOMAIN="$WILDCARD_DOMAIN"
         export SSL_DNS_PROVIDER="$DNS_PROVIDER"
+        export SSL_VALIDATION_METHOD="$VALIDATION_METHOD"
         
         echo
         info "传递给后续命令的环境变量:"
@@ -1479,6 +1731,7 @@ execute_post_script() {
         echo "  • SSL_WILDCARD_DOMAIN: $SSL_WILDCARD_DOMAIN"
         echo "  • SSL_EMAIL: $SSL_EMAIL"
         echo "  • SSL_DNS_PROVIDER: $SSL_DNS_PROVIDER"
+        echo "  • SSL_VALIDATION_METHOD: $SSL_VALIDATION_METHOD"
         echo
         
         if eval "$POST_SCRIPT_CMD"; then
@@ -1755,7 +2008,9 @@ certificate_issue_flow() {
     detect_os
     check_dependencies
     install_acme
-    setup_dns_provider
+    if [ "$VALIDATION_METHOD" = "dns" ]; then
+        setup_dns_provider
+    fi
     register_account
     issue_certificate
     install_certificate
@@ -1770,7 +2025,10 @@ certificate_issue_flow() {
     if [ -n "$WILDCARD_DOMAIN" ]; then
         echo "  • 通配符域名: $WILDCARD_DOMAIN"
     fi
-    echo "  • DNS提供商: $DNS_PROVIDER"
+    echo "  • 验证方式: $VALIDATION_METHOD"
+    if [ "$VALIDATION_METHOD" = "dns" ]; then
+        echo "  • DNS提供商: $DNS_PROVIDER"
+    fi
     separator
     
     # 保存配置
@@ -1881,13 +2139,19 @@ show_help() {
     title "帮助信息"
     echo -e "${CYAN}使用说明:${NC}"
     echo "  本脚本用于管理 SSL 证书，支持申请、续期、查看和卸载证书。"
+    echo "  支持 DNS 验证、HTTP-80端口验证和 TLS-443端口验证三种方式。"
     echo
     echo -e "${CYAN}主要功能:${NC}"
-    echo "  • 申请新证书: 通过 DNS 验证方式申请 SSL 证书"
+    echo "  • 申请新证书: 通过 DNS/HTTP/TLS 验证方式申请 SSL 证书"
     echo "  • 证书续期: 续期单个或所有已安装的证书"
     echo "  • 证书管理: 查看证书列表、信息和状态"
     echo "  • 证书卸载: 安全移除不需要的证书"
     echo "  • 配置管理: 显示和修改当前配置"
+    echo
+    echo -e "${CYAN}支持的验证方式:${NC}"
+    echo "  • DNS 验证: 支持通配符证书，需要配置DNS提供商"
+    echo "  • HTTP 验证: 使用80端口验证，需要确保80端口可访问"
+    echo "  • TLS 验证: 使用443端口验证，需要确保443端口可访问"
     echo
     echo -e "${CYAN}支持的 DNS 提供商:${NC}"
     echo "  • CloudFlare (推荐)"
@@ -1899,6 +2163,10 @@ show_help() {
     echo "  DOMAIN               证书域名"
     echo "  WILDCARD_DOMAIN      通配符域名"
     echo "  EMAIL                注册邮箱"
+    echo "  VALIDATION_METHOD    验证方式: dns, http, tls"
+    echo "  HTTP_PORT            HTTP验证端口 (默认: 80)"
+    echo "  TLS_PORT             TLS验证端口 (默认: 443)"
+    echo "  SKIP_PORT_CHECK      跳过端口检查 (true/false)"
     echo "  DNS_PROVIDER         DNS提供商: cloudflare, luadns, he 或 cloudns"
     echo "  CF_Token             CloudFlare API Token (推荐)"
     echo "  CF_Zone_ID           CloudFlare Zone ID (可选)"
@@ -1918,22 +2186,30 @@ show_help() {
     echo "  POST_SCRIPT_CMD      后续命令"
     echo "  POST_SCRIPT_ENABLED  是否启用后续命令"
     echo
-    echo -e "${CYAN}ClouDNS 使用说明:${NC}"
-    echo "  推荐使用子用户 Auth ID，因为它只能访问特定区域，更安全。"
-    echo "  可以在 ClouDNS 控制台创建子用户并分配权限。"
+    echo -e "${CYAN}验证方式选择建议:${NC}"
+    echo "  • 通配符证书: 必须使用 DNS 验证"
+    echo "  • 单域名证书: 根据服务器环境选择"
+    echo "  • 服务器有公网IP且端口开放: 推荐使用 HTTP/TLS 验证"
+    echo "  • 服务器在防火墙后或端口受限: 推荐使用 DNS 验证"
+    echo
+    echo -e "${CYAN}端口验证注意事项:${NC}"
+    echo "  • HTTP验证: 需要确保80端口可从公网访问"
+    echo "  • TLS验证: 需要确保443端口可从公网访问"
+    echo "  • 如果端口被占用，验证会失败"
+    echo "  • 可使用 SKIP_PORT_CHECK=true 跳过端口检查"
     echo
     echo -e "${CYAN}使用示例:${NC}"
     echo "  # 交互式菜单模式"
     echo "  ./ssl-manager.sh"
     echo
-    echo "  # 一键申请证书 (使用环境变量或配置文件)"
-    echo "  DOMAIN=\"your-domain.com\" CLOUDNS_SUB_AUTH_ID=\"your_sub_auth_id\" CLOUDNS_AUTH_PASSWORD=\"your_password\" ./ssl-manager.sh --issue"
+    echo "  # 使用HTTP验证申请证书"
+    echo "  DOMAIN=\"your-domain.com\" VALIDATION_METHOD=\"http\" ./ssl-manager.sh --issue"
     echo
-    echo "  # 保存配置后一键运行"
-    echo "  ./ssl-manager.sh --quick"
+    echo "  # 使用TLS验证申请证书"
+    echo "  DOMAIN=\"your-domain.com\" VALIDATION_METHOD=\"tls\" ./ssl-manager.sh --issue"
     echo
-    echo "  # 续期证书"
-    echo "  DOMAIN=\"your-domain.com\" ./ssl-manager.sh --renew"
+    echo "  # 使用DNS验证申请通配符证书"
+    echo "  DOMAIN=\"your-domain.com\" WILDCARD_DOMAIN=\"*.your-domain.com\" VALIDATION_METHOD=\"dns\" CLOUDNS_SUB_AUTH_ID=\"your_sub_auth_id\" CLOUDNS_AUTH_PASSWORD=\"your_password\" ./ssl-manager.sh --issue"
     echo
     echo -e "${YELLOW}提示: 在 SSH 终端中，建议使用交互式菜单模式以获得最佳体验。${NC}"
 }
