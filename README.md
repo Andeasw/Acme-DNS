@@ -70,10 +70,13 @@ DOMAIN="example.com" WILDCARD_DOMAIN="*.example.com" CF_Token="your_token" ./Acm
 
 * Automatic SSL issuance & renewal
 * Wildcard certificate support (`*.example.com`)
-* **8 DNS Providers**: CloudFlare, LuaDNS, Hurricane Electric, ClouDNS, PowerDNS, FreeDNS, deSEC.io, dynv6
+* **8 DNS Providers**: CloudFlare, LuaDNS, Hurricane Electric, ClouDNS, PowerDNS, 1984Hosting, deSEC.io, dynv6
 * Dual ACME server support: Let's Encrypt, ZeroSSL
 * **Multi-key-type support**: RSA-2048 (default), RSA-4096, ECC-256, ECC-384, ECC-521
 * **Install & Auto-Renew**: Install certificates to custom paths with automatic renewal via cron or systemd
+* **Secure Credential Storage**: Sensitive credentials (passwords/tokens) are never stored in plaintext config files
+* **DNS Propagation Display**: Real-time countdown display during DNS record propagation wait (120 seconds)
+* **Quick Startup**: Optional quick access command - just type `ssl` to launch the script from anywhere
 * Interactive menu with color-coded output
 * Step-by-step configuration wizard
 * Configuration save/load functionality
@@ -101,7 +104,7 @@ DOMAIN="example.com" WILDCARD_DOMAIN="*.example.com" CF_Token="your_token" ./Acm
 | Hurricane Electric (HE) | Username + Password                       | ✅           | Account credentials      |
 | ClouDNS                 | Sub-Auth ID (recommended) or Auth ID      | ✅           | Limited access support   |
 | PowerDNS                | API URL + Token                           | ✅           | Self-hosted DNS          |
-| FreeDNS                 | User ID + Password                        | ⚠️          | No official API          |
+| 1984Hosting             | Username + Password                       | ✅           | Login token cached       |
 | deSEC.io                | API Token                                 | ✅           | Free dynDNS service      |
 | dynv6                   | HTTP Token or SSH Key                     | ✅           | Dual authentication mode |
 
@@ -138,13 +141,12 @@ PDNS_Token="your_api_token"
 PDNS_Ttl="60"                  # Default: 60 seconds
 ```
 
-#### FreeDNS (⚠️ Special Case)
+#### 1984Hosting (Website Login)
 ```bash
-DNS_PROVIDER="freedns"
-FREEDNS_User="your_user_id"
-FREEDNS_Password="your_password"
-# Note: You must own the top-level domain, not just a subdomain
-# FreeDNS will cache auth tokens automatically in ~/.acme.sh/account.conf
+DNS_PROVIDER="1984hosting"
+One984HOSTING_Username="your_username"
+One984HOSTING_Password="your_password"
+# 初次登录后将自动缓存认证令牌到 ~/.acme.sh/account.conf
 ```
 
 #### deSEC.io (Free dynDNS)
@@ -286,25 +288,30 @@ webserver-address=0.0.0.0
 webserver-port=8081
 ```
 
-### FreeDNS
-**⚠️ Important Limitations:**
-- FreeDNS does **NOT** provide an official API
-- The plugin uses web scraping (HTTP POST) to update records
-- You **MUST** own the top-level domain, not just a subdomain
-- Cannot use this for FreeDNS public domains or subdomains under them
-- Two-factor authentication (2FA) must be disabled for automated login
+### 1984Hosting
+**How It Works:**
+- 1984Hosting does **NOT** provide a traditional API
+- The acme.sh plugin logs into the 1984Hosting website to update DNS TXT records
+- Only username and password are required for initial authentication
 
 **Session Token Caching:**
-- After first successful login, FreeDNS returns an auth token
+- After first successful login, 1984Hosting returns an auth token
 - This token is automatically saved in `~/.acme.sh/account.conf`
 - Future runs will reuse the cached token instead of username/password
+- The plugin will only ask for credentials if the token expires
 
-**Troubleshooting FreeDNS:**
-1. Verify you own the domain (not a subdomain under a public zone)
-2. Check that 2FA is disabled on your account
-3. Ensure username and password are correct
-4. If login fails repeatedly, clear cached tokens: `rm ~/.acme.sh/account.conf`
+**Requirements:**
+- You must own the domain at 1984Hosting
+- Standard account (no special API access needed)
+- Username and password for the 1984Hosting website
 
+**Troubleshooting:**
+1. Verify your credentials are correct for https://1984.hosting/
+2. Ensure domain is registered and DNS is managed at 1984Hosting
+3. If login fails repeatedly, the cached token may have expired - provide credentials again
+4. Clear cached tokens if needed: `rm ~/.acme.sh/account.conf` (use with caution)
+
+**Reference:** https://github.com/acmesh-official/acme.sh/wiki/dnsapi#dns_1984hosting
 **Error Reporting:** https://github.com/acmesh-official/acme.sh/issues
 
 ### deSEC.io
