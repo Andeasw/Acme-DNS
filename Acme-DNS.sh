@@ -1,7 +1,7 @@
 #!/bin/bash
 # ===========================================
 # RSA 2048 证书管理脚本 (acme.sh + 多DNS提供商支持)
-# 支持的DNS提供商: CloudFlare/LuaDNS/Hurricane Electric/ClouDNS/PowerDNS/FreeDNS/deSEC/dynv6
+# 支持的DNS提供商: CloudFlare/LuaDNS/Hurricane Electric/ClouDNS/PowerDNS/1984Hosting/deSEC/dynv6
 # 支持 Debian、Alpine 和 FreeBSD 系统
 # 支持证书申请、续期、管理和卸载
 # 支持 DNS、HTTP-80、TLS-443 验证方式
@@ -48,9 +48,9 @@ PDNS_ServerId="${PDNS_ServerId:-localhost}"
 PDNS_Token="${PDNS_Token:-}"
 PDNS_Ttl="${PDNS_Ttl:-60}"
 
-# FreeDNS 配置
-FREEDNS_User="${FREEDNS_User:-}"
-FREEDNS_Password="${FREEDNS_Password:-}"
+# 1984Hosting 配置
+One984HOSTING_Username="${One984HOSTING_Username:-}"
+One984HOSTING_Password="${One984HOSTING_Password:-}"
 
 # deSEC.io 配置
 DEDYN_TOKEN="${DEDYN_TOKEN:-}"
@@ -216,6 +216,73 @@ fatal() {
 step() { log STEP "$@"; }
 debug() { log DEBUG "$@"; }
 
+# 快速启动配置
+QUICK_START_CONFIGURED="${QUICK_START_CONFIGURED:-false}"
+QUICK_START_FLAG_FILE="$HOME/.acme-dns-quick-start"
+
+# 加密/解密函数 (用于配置文件存储)
+encrypt_credential() {
+    local plain_text="$1"
+    if [ -z "$plain_text" ]; then
+        echo ""
+        return
+    fi
+    echo -n "$plain_text" | openssl dgst -sha256 -hex 2>/dev/null | awk '{print $2}'
+}
+
+# DNS传播等待倒计时显示
+show_dns_propagation_countdown() {
+    local wait_seconds="${1:-120}"
+    info "等待DNS记录传播 (${wait_seconds}秒)..."
+    
+    local remaining=$wait_seconds
+    while [ $remaining -gt 0 ]; do
+        printf "\r${CYAN}[等待] DNS传播中... 剩余时间: %3d 秒${NC}" $remaining
+        sleep 1
+        remaining=$((remaining - 1))
+    done
+    printf "\r${GREEN}[完成] DNS记录传播等待完成 (共${wait_seconds}秒)          ${NC}\n"
+}
+
+# 设置快速启动
+setup_quick_start() {
+    local script_path="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+    
+    if [ -f "$QUICK_START_FLAG_FILE" ]; then
+        info "快速启动已配置"
+        return 0
+    fi
+    
+    if prompt_yesno "是否启用快速访问？(下次可通过输入 'ssl' 命令快速启动)" "y"; then
+        if [ -w "/usr/local/bin" ] || sudo -n true 2>/dev/null; then
+            local need_sudo="false"
+            if [ ! -w "/usr/local/bin" ]; then
+                need_sudo="true"
+            fi
+            
+            if [ "$need_sudo" = "true" ]; then
+                if sudo ln -sf "$script_path" /usr/local/bin/ssl 2>/dev/null; then
+                    success "已创建快速启动命令: ssl"
+                    touch "$QUICK_START_FLAG_FILE"
+                    info "提示: 现在可以在任何目录下输入 'ssl' 来启动证书管理器"
+                else
+                    warn "无法创建快速启动命令，需要sudo权限"
+                fi
+            else
+                if ln -sf "$script_path" /usr/local/bin/ssl 2>/dev/null; then
+                    success "已创建快速启动命令: ssl"
+                    touch "$QUICK_START_FLAG_FILE"
+                    info "提示: 现在可以在任何目录下输入 'ssl' 来启动证书管理器"
+                else
+                    warn "无法创建快速启动命令"
+                fi
+            fi
+        else
+            warn "无法创建快速启动命令，/usr/local/bin 目录不可写且无sudo权限"
+        fi
+    fi
+}
+
 run_acme() {
     local use_tee="true"
     if [ "${1:-}" = "--no-tee" ]; then
@@ -372,7 +439,7 @@ get_dns_api_name() {
         he) echo "dns_he" ;;
         cloudns) echo "dns_cloudns" ;;
         powerdns) echo "dns_pdns" ;;
-        freedns) echo "dns_freedns" ;;
+        1984hosting) echo "dns_1984hosting" ;;
         desec) echo "dns_desec" ;;
         dynv6) echo "dns_dynv6" ;;
         *) echo "" ;;
@@ -1064,7 +1131,7 @@ show_dns_menu() {
     echo "  3) Hurricane Electric (HE)"
     echo "  4) ClouDNS(APIKEY)"
     echo "  5) PowerDNS (嵌入式API)"
-    echo "  6) FreeDNS (网站登录)"
+    echo "  6) 1984Hosting (网站登录令牌)"
     echo "  7) deSEC.io (dynDNS服务)"
     echo "  8) dynv6 (HTTP/SSH API)"
     echo
@@ -1197,8 +1264,8 @@ select_config_mode() {
             if [ -z "$PDNS_Url" ] || [ -z "$PDNS_Token" ]; then
                 has_complete_config=false
             fi
-        elif [ "$DNS_PROVIDER" = "freedns" ]; then
-            if [ -z "$FREEDNS_User" ] || [ -z "$FREEDNS_Password" ]; then
+        elif [ "$DNS_PROVIDER" = "1984hosting" ]; then
+            if [ -z "$One984HOSTING_Username" ] || [ -z "$One984HOSTING_Password" ]; then
                 has_complete_config=false
             fi
         elif [ "$DNS_PROVIDER" = "desec" ]; then
@@ -1333,12 +1400,12 @@ quick_config() {
                             prompt_input "TXT 记录 TTL" "PDNS_Ttl" "${PDNS_Ttl:-60}"
                         fi
                         ;;
-                    freedns)
-                        if [ -z "$FREEDNS_User" ]; then
-                            prompt_input "FreeDNS 用户ID" "FREEDNS_User" "${FREEDNS_User:-}"
+                    1984hosting)
+                        if [ -z "$One984HOSTING_Username" ]; then
+                            prompt_input "1984Hosting 用户名" "One984HOSTING_Username" "${One984HOSTING_Username:-}"
                         fi
-                        if [ -z "$FREEDNS_Password" ]; then
-                            prompt_password "FreeDNS 登录密码" "FREEDNS_Password" "${FREEDNS_Password:-}"
+                        if [ -z "$One984HOSTING_Password" ]; then
+                            prompt_password "1984Hosting 登录密码" "One984HOSTING_Password" "${One984HOSTING_Password:-}"
                         fi
                         ;;
                     desec)
@@ -1421,8 +1488,8 @@ full_config() {
     PDNS_ServerId="localhost"
     PDNS_Token=""
     PDNS_Ttl="60"
-    FREEDNS_User=""
-    FREEDNS_Password=""
+    One984HOSTING_Username=""
+    One984HOSTING_Password=""
     DEDYN_TOKEN=""
     DYNV6_TOKEN=""
     DYNV6_KEY=""
@@ -1544,14 +1611,15 @@ configure_dns_provider() {
                 break
                 ;;
             6)
-                DNS_PROVIDER="freedns"
+                DNS_PROVIDER="1984hosting"
                 echo
-                echo -e "${CYAN}FreeDNS 配置:${NC}"
-                echo -e "${CYAN}FreeDNS 无官方 API，需要提供网站登录信息以获取动态令牌。${NC}"
-                echo -e "${YELLOW}建议: 首次使用时，请确保账号启用了双重验证以外的登录方式，否则无法自动登录。${NC}"
-                prompt_input "FreeDNS 用户ID" "FREEDNS_User" "${FREEDNS_User:-}"
-                prompt_password "FreeDNS 登录密码" "FREEDNS_Password" "${FREEDNS_Password:-}"
-                info "已选择 FreeDNS 作为DNS提供商"
+                echo -e "${CYAN}1984Hosting 配置:${NC}"
+                echo -e "${CYAN}1984Hosting 通过网站登录方式更新DNS记录。${NC}"
+                echo -e "${CYAN}需要提供网站登录用户名和密码。首次登录后会缓存认证令牌。${NC}"
+                echo -e "${YELLOW}注意: 插件会通过HTTP POST方式登录网站，认证令牌会自动保存到 ~/.acme.sh/account.conf${NC}"
+                prompt_input "1984Hosting 用户名" "One984HOSTING_Username" "${One984HOSTING_Username:-}"
+                prompt_password "1984Hosting 登录密码" "One984HOSTING_Password" "${One984HOSTING_Password:-}"
+                info "已选择 1984Hosting 作为DNS提供商"
                 break
                 ;;
             7)
@@ -2267,9 +2335,14 @@ save_config() {
     
     step "保存配置到文件: $config_file"
     
+    info "注意: 敏感凭据(密码/令牌)不会保存到配置文件中，仅保存非敏感配置信息"
+    info "DNS凭据已安全存储在 ~/.acme.sh/account.conf 中(由acme.sh管理)"
+    
     cat > "$config_file" << EOF
 # SSL证书管理脚本配置文件
 # 生成时间: $(date)
+# 安全说明: 本配置文件不包含密码和密钥等敏感信息
+# 敏感凭据由 acme.sh 安全管理，存储在 ~/.acme.sh/account.conf
 
 # 域名配置
 DOMAIN="$DOMAIN"
@@ -2285,25 +2358,42 @@ SKIP_PORT_CHECK="$SKIP_PORT_CHECK"
 # DNS提供商配置
 DNS_PROVIDER="$DNS_PROVIDER"
 
-# CloudFlare配置
-CF_Token="$CF_Token"
+# CloudFlare配置 (敏感信息已省略，请通过环境变量或交互式配置提供)
 CF_Zone_ID="$CF_Zone_ID"
 CF_Account_ID="$CF_Account_ID"
-CF_Key="$CF_Key"
 CF_Email="$CF_Email"
+# CF_Token="***" # 已省略，请重新配置
+# CF_Key="***" # 已省略，请重新配置
 
 # LuaDNS配置
-LUA_KEY="$LUA_KEY"
 LUA_EMAIL="$LUA_EMAIL"
+# LUA_KEY="***" # 已省略，请重新配置
 
 # Hurricane Electric配置
 HE_USERNAME="$HE_USERNAME"
-HE_PASSWORD="$HE_PASSWORD"
+# HE_PASSWORD="***" # 已省略，请重新配置
 
 # ClouDNS配置
 CLOUDNS_AUTH_ID="$CLOUDNS_AUTH_ID"
 CLOUDNS_SUB_AUTH_ID="$CLOUDNS_SUB_AUTH_ID"
-CLOUDNS_AUTH_PASSWORD="$CLOUDNS_AUTH_PASSWORD"
+# CLOUDNS_AUTH_PASSWORD="***" # 已省略，请重新配置
+
+# PowerDNS配置
+PDNS_Url="$PDNS_Url"
+PDNS_ServerId="$PDNS_ServerId"
+PDNS_Ttl="$PDNS_Ttl"
+# PDNS_Token="***" # 已省略，请重新配置
+
+# 1984Hosting配置
+One984HOSTING_Username="$One984HOSTING_Username"
+# One984HOSTING_Password="***" # 已省略，请重新配置
+
+# deSEC配置
+# DEDYN_TOKEN="***" # 已省略，请重新配置
+
+# dynv6配置
+DYNV6_KEY="$DYNV6_KEY"
+# DYNV6_TOKEN="***" # 已省略，请重新配置
 
 # 证书路径配置
 CERT_PATH="$CERT_PATH"
@@ -2739,15 +2829,21 @@ ensure_dns_creds() {
             export PDNS_Token="$PDNS_Token"
             export PDNS_Ttl="${PDNS_Ttl:-60}"
             ;;
-        freedns)
+        1984hosting)
             {
-                grep -v "^FREEDNS_User=" "$account_conf" 2>/dev/null || true
-                grep -v "^FREEDNS_Password=" "$account_conf" 2>/dev/null || true
+                grep -v "^One984HOSTING_Username=" "$account_conf" 2>/dev/null || true
+                grep -v "^One984HOSTING_Password=" "$account_conf" 2>/dev/null || true
+                if [ -n "$One984HOSTING_Username" ]; then
+                    echo "One984HOSTING_Username=$One984HOSTING_Username"
+                fi
+                if [ -n "$One984HOSTING_Password" ]; then
+                    echo "One984HOSTING_Password=$One984HOSTING_Password"
+                fi
             } > "${account_conf}.tmp" && mv "${account_conf}.tmp" "$account_conf"
 
-            export FREEDNS_User="$FREEDNS_User"
-            export FREEDNS_Password="$FREEDNS_Password"
-            warn "FreeDNS 登录信息仅在本次运行中使用，acme.sh 将在 account.conf 中保存返回的 Auth Token"
+            export One984HOSTING_Username="$One984HOSTING_Username"
+            export One984HOSTING_Password="$One984HOSTING_Password"
+            warn "1984Hosting 登录信息仅在本次运行中使用，acme.sh 将在 account.conf 中保存返回的认证令牌"
             ;;
         desec)
             {
@@ -3984,6 +4080,10 @@ certificate_issue_flow() {
         if prompt_yesno "是否保存当前配置以便下次使用?" "y"; then
             save_config
         fi
+        
+        # 询问是否设置快速启动
+        echo
+        setup_quick_start
         
         execute_post_script
     else
