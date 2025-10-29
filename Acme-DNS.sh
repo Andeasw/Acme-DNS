@@ -256,14 +256,293 @@ debug() { log DEBUG "$@"; }
 # 快速启动配置
 QUICK_START_FLAG_FILE="$HOME/.acme-dns-quick-start"
 
-# 加密/解密函数 (用于配置文件存储)
-encrypt_credential() {
-    local plain_text="$1"
-    if [ -z "$plain_text" ]; then
-        echo ""
-        return
+CONFIG_ENCRYPTION_VERSION_DEFAULT="1"
+CONFIG_ENCRYPTION_VERSION="${CONFIG_ENCRYPTION_VERSION:-$CONFIG_ENCRYPTION_VERSION_DEFAULT}"
+MASTER_PASSWORD_HASH="${MASTER_PASSWORD_HASH:-}"
+MASTER_PASSWORD_SECRET="${MASTER_PASSWORD_SECRET:-}"
+declare -a SENSITIVE_CONFIG_VARS=(
+    "CF_Token"
+    "CF_Key"
+    "LUA_KEY"
+    "HE_PASSWORD"
+    "CLOUDNS_AUTH_PASSWORD"
+    "PDNS_Token"
+    "One984HOSTING_Password"
+    "DEDYN_TOKEN"
+    "DYNV6_TOKEN"
+    "DYNV6_KEY"
+    "TELEGRAM_BOT_TOKEN"
+    "WEBHOOK_URL"
+    "FREEDNS_Password"
+)
+
+hash_password_secure() {
+    local password="$1"
+    if [ -z "$password" ]; then
+        return 1
     fi
-    echo -n "$plain_text" | openssl dgst -sha256 -hex 2>/dev/null | awk '{print $2}'
+
+    local hashed=""
+    if ! hashed=$(PASS="$password" python3 - <<'PY' 2>/dev/null
+import crypt
+import os
+import sys
+
+password = os.environ.get("PASS", "")
+if not password:
+    sys.exit(1)
+
+method = None
+if hasattr(crypt, "METHOD_ARGON2ID"):
+    method = crypt.METHOD_ARGON2ID
+elif hasattr(crypt, "METHOD_BLOWFISH"):
+    method = crypt.METHOD_BLOWFISH
+else:
+    sys.exit(2)
+
+print(crypt.crypt(password, crypt.mksalt(method)))
+PY
+    ); then
+        return 1
+    fi
+
+    printf '%s\n' "$hashed"
+}
+
+verify_password_secure() {
+    local password="$1"
+    local hashed="$2"
+    if [ -z "$password" ] || [ -z "$hashed" ]; then
+        return 1
+    fi
+
+    PASS="$password" HASH="$hashed" python3 - <<'PY' >/dev/null 2>&1
+import crypt
+import os
+import sys
+
+password = os.environ.get("PASS", "")
+hashed = os.environ.get("HASH", "")
+
+if not password or not hashed:
+    sys.exit(1)
+
+if crypt.crypt(password, hashed) == hashed:
+    sys.exit(0)
+sys.exit(1)
+PY
+}
+
+prompt_new_master_password() {
+    local env_pass="${MASTER_PASSWORD:-}"
+    local pass1=""
+    local pass2=""
+
+    if [ -n "$env_pass" ]; then
+        if [ ${#env_pass} -lt 8 ]; then
+            error "MASTER_PASSWORD 环境变量长度不足 8 位，无法作为配置加密密码"
+            return 1
+        fi
+        pass1="$env_pass"
+    else
+        while true; do
+            echo -ne "${CYAN}请设置配置加密密码(至少8位): ${NC}"
+            read -rs pass1
+            echo
+            if [ ${#pass1} -lt 8 ]; then
+                warn "密码长度不足 8 位，请重新输入"
+                pass1=""
+                continue
+            fi
+            echo -ne "${CYAN}请再次输入以确认: ${NC}"
+            read -rs pass2
+            echo
+            if [ "$pass1" != "$pass2" ]; then
+                warn "两次输入的密码不一致，请重新输入"
+                pass1=""
+                pass2=""
+                continue
+            fi
+            break
+        done
+    fi
+
+    local hashed
+    if ! hashed=$(hash_password_secure "$pass1"); then
+        error "生成配置密码哈希失败，请确保已安装 python3 并支持 bcrypt/argon2"
+        return 1
+    fi
+
+    MASTER_PASSWORD_SECRET="$pass1"
+    MASTER_PASSWORD_HASH="$hashed"
+    CONFIG_ENCRYPTION_VERSION="$CONFIG_ENCRYPTION_VERSION_DEFAULT"
+
+    unset pass1 pass2 env_pass hashed
+    return 0
+}
+
+prompt_master_password_verify() {
+    local attempt=""
+    local tries=0
+    local max_tries=3
+
+    while [ $tries -lt $max_tries ]; do
+        if [ -n "${MASTER_PASSWORD:-}" ] && [ $tries -eq 0 ]; then
+            attempt="$MASTER_PASSWORD"
+        else
+            echo -ne "${CYAN}请输入配置加密密码: ${NC}"
+            read -rs attempt
+            echo
+        fi
+
+        if [ -z "$attempt" ]; then
+            warn "密码不能为空"
+        elif verify_password_secure "$attempt" "$MASTER_PASSWORD_HASH"; then
+            MASTER_PASSWORD_SECRET="$attempt"
+            return 0
+        else
+            warn "配置加密密码验证失败"
+        fi
+
+        attempt=""
+        tries=$((tries + 1))
+    done
+
+    return 1
+}
+
+ensure_master_password_loaded() {
+    if [ -n "${MASTER_PASSWORD_SECRET:-}" ]; then
+        return 0
+    fi
+    if [ -z "${MASTER_PASSWORD_HASH:-}" ]; then
+        return 1
+    fi
+    if prompt_master_password_verify; then
+        return 0
+    fi
+    return 1
+}
+
+ensure_master_password_for_encryption() {
+    if [ -n "${MASTER_PASSWORD_HASH:-}" ]; then
+        if ensure_master_password_loaded; then
+            return 0
+        fi
+        error "配置加密密码验证失败，无法继续保存配置"
+        return 1
+    fi
+
+    if prompt_new_master_password; then
+        return 0
+    fi
+    return 1
+}
+
+encrypt_sensitive_value() {
+    local plaintext="$1"
+    local password="$2"
+
+    if [ -z "$plaintext" ]; then
+        printf '%s' ""
+        return 0
+    fi
+    if [ -z "$password" ]; then
+        return 1
+    fi
+
+    local ciphertext=""
+    if ! ciphertext=$(printf '%s' "$plaintext" | openssl enc -aes-256-cbc -pbkdf2 -salt -base64 -pass pass:"$password" 2>/dev/null | tr -d '\n'); then
+        return 1
+    fi
+    printf '%s\n' "$ciphertext"
+}
+
+decrypt_sensitive_value() {
+    local ciphertext="$1"
+    local password="$2"
+
+    if [ -z "$ciphertext" ]; then
+        printf '%s' ""
+        return 0
+    fi
+    if [ -z "$password" ]; then
+        return 1
+    fi
+
+    local plaintext=""
+    if ! plaintext=$(printf '%s' "$ciphertext" | openssl enc -aes-256-cbc -pbkdf2 -salt -base64 -d -pass pass:"$password" 2>/dev/null); then
+        return 1
+    fi
+    printf '%s\n' "$plaintext"
+}
+
+restore_sensitive_variables_from_config() {
+    if [ -z "${MASTER_PASSWORD_SECRET:-}" ]; then
+        return 1
+    fi
+
+    local var=""
+    for var in "${SENSITIVE_CONFIG_VARS[@]}"; do
+        local enc_var="${var}_ENC"
+        local enc_value="${!enc_var:-}"
+        if [ -n "$enc_value" ]; then
+            local decrypted=""
+            if decrypted=$(decrypt_sensitive_value "$enc_value" "$MASTER_PASSWORD_SECRET"); then
+                eval "$var=\"\$decrypted\""
+            else
+                warn "无法解密配置中的 $var，已跳过"
+            fi
+        fi
+    done
+
+    return 0
+}
+
+sanitize_account_conf_secure() {
+    local account_conf="$ACME_HOME/account.conf"
+    mkdir -p "$ACME_HOME" 2>/dev/null || true
+    if [ ! -f "$account_conf" ]; then
+        touch "$account_conf" 2>/dev/null || true
+    fi
+
+    ensure_master_password_loaded || true
+
+    local tmp_file="${account_conf}.secure"
+    : > "$tmp_file"
+
+    local line=""
+    while IFS= read -r line || [ -n "$line" ]; do
+        local keep=true
+        local sensitive_var=""
+        for sensitive_var in "${SENSITIVE_CONFIG_VARS[@]}"; do
+            if [[ "$line" == ${sensitive_var}=* ]] || [[ "$line" == ${sensitive_var}_ENC=* ]]; then
+                keep=false
+                break
+            fi
+        done
+        if [ "$keep" = true ]; then
+            printf '%s\n' "$line" >> "$tmp_file"
+        fi
+    done < "$account_conf"
+
+    if [ -n "${MASTER_PASSWORD_SECRET:-}" ]; then
+        local sensitive_var=""
+        for sensitive_var in "${SENSITIVE_CONFIG_VARS[@]}"; do
+            local value="${!sensitive_var:-}"
+            if [ -n "$value" ]; then
+                local enc_value=""
+                if enc_value=$(encrypt_sensitive_value "$value" "$MASTER_PASSWORD_SECRET"); then
+                    printf '%s_ENC="%s"\n' "$sensitive_var" "$enc_value" >> "$tmp_file"
+                else
+                    warn "无法将 $sensitive_var 写入加密存储"
+                fi
+            fi
+        done
+    fi
+
+    mv "$tmp_file" "$account_conf" 2>/dev/null || cp "$tmp_file" "$account_conf"
+    chmod 600 "$account_conf" 2>/dev/null || true
 }
 
 # DNS传播等待倒计时显示
@@ -647,8 +926,9 @@ run_acme() {
         fatal "未找到 acme.sh，请先安装"
     fi
 
+    local exit_status=0
+
     if [ "$monitor_dns_wait" = "true" ]; then
-        local exit_status=0
         local line=""
         local wait_seconds=""
         if [ "$use_tee" = "true" ]; then
@@ -658,7 +938,7 @@ run_acme() {
                     show_dns_propagation_countdown "$wait_seconds"
                 fi
             done
-            exit_status=$?
+            exit_status=${PIPESTATUS[0]}
         else
             "$acme_bin" "$@" 2>&1 | while IFS= read -r line || [ -n "$line" ]; do
                 printf '%s\n' "$line"
@@ -670,18 +950,22 @@ run_acme() {
                     show_dns_propagation_countdown "$wait_seconds"
                 fi
             done
-            exit_status=$?
+            exit_status=${PIPESTATUS[0]}
         fi
+        sanitize_account_conf_secure
         return $exit_status
     fi
 
     if [ "$use_tee" = "true" ]; then
         "$acme_bin" "$@" 2>&1 | tee -a "$LOG_FILE"
-        return ${PIPESTATUS[0]}
+        exit_status=${PIPESTATUS[0]}
     else
         "$acme_bin" "$@"
-        return $?
+        exit_status=$?
     fi
+
+    sanitize_account_conf_secure
+    return $exit_status
 }
 
 trim_spaces() {
@@ -1201,7 +1485,7 @@ check_deps() {
     local missing_deps=()
     
     # 检测必需的命令
-    local required_cmds="curl openssl"
+    local required_cmds="curl openssl python3"
     local recommended_cmds="socat cron lsof"
     
     # 根据验证方式调整依赖
@@ -2718,17 +3002,38 @@ modify_config() {
 # 保存配置到文件
 save_config() {
     local config_file="${1:-./ssl-manager.conf}"
-    
+
     step "保存配置到文件: $config_file"
-    
-    info "注意: 敏感凭据(密码/令牌)不会保存到配置文件中，仅保存非敏感配置信息"
-    info "DNS凭据已安全存储在 ~/.acme.sh/account.conf 中(由acme.sh管理)"
-    
+
+    if ! ensure_master_password_for_encryption; then
+        return 1
+    fi
+
+    local master_password="$MASTER_PASSWORD_SECRET"
+    local sensitive_var=""
+    for sensitive_var in "${SENSITIVE_CONFIG_VARS[@]}"; do
+        local value="${!sensitive_var:-}"
+        local enc_value=""
+        if [ -n "$value" ] && [ -n "$master_password" ]; then
+            if ! enc_value=$(encrypt_sensitive_value "$value" "$master_password"); then
+                error "加密敏感信息 $sensitive_var 失败，配置未保存"
+                return 1
+            fi
+        fi
+        local enc_var="${sensitive_var}_ENC"
+        printf -v "$enc_var" '%s' "$enc_value"
+    done
+
+    info "敏感凭据已使用加密方式保存到配置文件"
+    info "~/.acme.sh/account.conf 中的敏感字段将同步加密处理"
+
     cat > "$config_file" << EOF
 # SSL证书管理脚本配置文件
 # 生成时间: $(date)
-# 安全说明: 本配置文件不包含密码和密钥等敏感信息
-# 敏感凭据由 acme.sh 安全管理，存储在 ~/.acme.sh/account.conf
+# 安全说明: 所有敏感信息均使用 AES-256-CBC + PBKDF2 加密保存，需配置密码才能解密
+
+CONFIG_ENCRYPTION_VERSION="$CONFIG_ENCRYPTION_VERSION"
+MASTER_PASSWORD_HASH="$MASTER_PASSWORD_HASH"
 
 # 域名配置
 DOMAIN="$DOMAIN"
@@ -2746,43 +3051,18 @@ KEY_TYPE="$KEY_TYPE"
 
 # DNS提供商配置
 DNS_PROVIDER="$DNS_PROVIDER"
-
-# CloudFlare配置 (敏感信息已省略，请通过环境变量或交互式配置提供)
 CF_Zone_ID="$CF_Zone_ID"
 CF_Account_ID="$CF_Account_ID"
 CF_Email="$CF_Email"
-# CF_Token="***" # 已省略，请重新配置
-# CF_Key="***" # 已省略，请重新配置
-
-# LuaDNS配置
 LUA_EMAIL="$LUA_EMAIL"
-# LUA_KEY="***" # 已省略，请重新配置
-
-# Hurricane Electric配置
 HE_USERNAME="$HE_USERNAME"
-# HE_PASSWORD="***" # 已省略，请重新配置
-
-# ClouDNS配置
 CLOUDNS_AUTH_ID="$CLOUDNS_AUTH_ID"
 CLOUDNS_SUB_AUTH_ID="$CLOUDNS_SUB_AUTH_ID"
-# CLOUDNS_AUTH_PASSWORD="***" # 已省略，请重新配置
-
-# PowerDNS配置
 PDNS_Url="$PDNS_Url"
 PDNS_ServerId="$PDNS_ServerId"
 PDNS_Ttl="$PDNS_Ttl"
-# PDNS_Token="***" # 已省略，请重新配置
-
-# 1984Hosting配置
 One984HOSTING_Username="$One984HOSTING_Username"
-# One984HOSTING_Password="***" # 已省略，请重新配置
-
-# deSEC配置
-# DEDYN_TOKEN="***" # 已省略，请重新配置
-
-# dynv6配置
-DYNV6_KEY="$DYNV6_KEY"
-# DYNV6_TOKEN="***" # 已省略，请重新配置
+FREEDNS_User="${FREEDNS_User:-}"
 
 # 证书路径配置
 CERT_PATH="$CERT_PATH"
@@ -2824,38 +3104,74 @@ SERVICE_RELOAD_CMD="$SERVICE_RELOAD_CMD"
 NOTIFY_ENABLED="$NOTIFY_ENABLED"
 NOTIFY_ON_SUCCESS="$NOTIFY_ON_SUCCESS"
 NOTIFY_ON_FAILURE="$NOTIFY_ON_FAILURE"
-TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN"
 TELEGRAM_CHAT_ID="$TELEGRAM_CHAT_ID"
-WEBHOOK_URL="$WEBHOOK_URL"
 MAIL_TO="$MAIL_TO"
 MAIL_SUBJECT_PREFIX="$MAIL_SUBJECT_PREFIX"
+
+# 加密存储的敏感参数
+CF_Token_ENC="${CF_Token_ENC:-}"
+CF_Key_ENC="${CF_Key_ENC:-}"
+LUA_KEY_ENC="${LUA_KEY_ENC:-}"
+HE_PASSWORD_ENC="${HE_PASSWORD_ENC:-}"
+CLOUDNS_AUTH_PASSWORD_ENC="${CLOUDNS_AUTH_PASSWORD_ENC:-}"
+PDNS_Token_ENC="${PDNS_Token_ENC:-}"
+One984HOSTING_Password_ENC="${One984HOSTING_Password_ENC:-}"
+DEDYN_TOKEN_ENC="${DEDYN_TOKEN_ENC:-}"
+DYNV6_TOKEN_ENC="${DYNV6_TOKEN_ENC:-}"
+DYNV6_KEY_ENC="${DYNV6_KEY_ENC:-}"
+TELEGRAM_BOT_TOKEN_ENC="${TELEGRAM_BOT_TOKEN_ENC:-}"
+WEBHOOK_URL_ENC="${WEBHOOK_URL_ENC:-}"
+FREEDNS_Password_ENC="${FREEDNS_Password_ENC:-}"
 EOF
 
     chmod 600 "$config_file"
+    sanitize_account_conf_secure
     success "配置已保存到: $config_file"
 }
 
 # 从文件加载配置
 load_config() {
     local config_file="${1:-./ssl-manager.conf}"
-    
+
     if [ ! -f "$config_file" ]; then
         error "配置文件不存在: $config_file"
         return 1
     fi
-    
+
     step "从文件加载配置: $config_file"
-    
+
     # 检查文件安全性
     if file "$config_file" | grep -q "script" || file "$config_file" | grep -q "binary"; then
         error "配置文件可能不安全，拒绝加载"
         return 1
     fi
-    
-    # 源配置文件
+
+    # 加载配置文件
     source "$config_file"
+    CONFIG_ENCRYPTION_VERSION="${CONFIG_ENCRYPTION_VERSION:-$CONFIG_ENCRYPTION_VERSION_DEFAULT}"
     KEY_TYPE=$(normalize_key_type "${KEY_TYPE:-rsa-2048}")
     KEY_TYPE_SELECTED="true"
+
+    local decrypted_sensitive=true
+    if [ -n "${MASTER_PASSWORD_HASH:-}" ]; then
+        info "检测到配置加密，正在验证访问密码..."
+        if ensure_master_password_loaded; then
+            if ! restore_sensitive_variables_from_config; then
+                warn "部分敏感信息解密失败，请检查密码或配置文件"
+                decrypted_sensitive=false
+            fi
+        else
+            error "配置加密密码验证失败，未加载敏感信息"
+            return 1
+        fi
+    else
+        MASTER_PASSWORD_SECRET=""
+    fi
+
+    if [ "$decrypted_sensitive" = true ]; then
+        sanitize_account_conf_secure
+    fi
+
     success "配置已从文件加载: $config_file"
     show_config
 }
@@ -3123,79 +3439,28 @@ ensure_dns_creds() {
     step "配置 DNS 提供商: $DNS_PROVIDER"
     DNS_PROVIDER_READY="false"
 
+    ensure_master_password_loaded || true
+
     case "$DNS_PROVIDER" in
         cloudflare)
-            # 清除可能的旧配置
-            {
-                grep -v "^CF_Token=" "$account_conf" 2>/dev/null || true
-                grep -v "^CF_Zone_ID=" "$account_conf" 2>/dev/null || true
-                grep -v "^CF_Account_ID=" "$account_conf" 2>/dev/null || true
-                grep -v "^CF_Key=" "$account_conf" 2>/dev/null || true
-                grep -v "^CF_Email=" "$account_conf" 2>/dev/null || true
-            } > "${account_conf}.tmp" && mv "${account_conf}.tmp" "$account_conf"
-
-            # 设置新的配置
             if [ -n "$CF_Token" ]; then
-                # API Token 方式
-                {
-                    echo "CF_Token=$CF_Token"
-                    [ -n "$CF_Zone_ID" ] && echo "CF_Zone_ID=$CF_Zone_ID"
-                    [ -n "$CF_Account_ID" ] && echo "CF_Account_ID=$CF_Account_ID"
-                } >> "$account_conf"
-
                 export CF_Token="$CF_Token"
                 [ -n "$CF_Zone_ID" ] && export CF_Zone_ID="$CF_Zone_ID"
                 [ -n "$CF_Account_ID" ] && export CF_Account_ID="$CF_Account_ID"
             else
-                # 全局 API Key 方式
-                {
-                    echo "CF_Key=$CF_Key"
-                    echo "CF_Email=$CF_Email"
-                } >> "$account_conf"
-
                 export CF_Key="$CF_Key"
                 export CF_Email="$CF_Email"
             fi
             ;;
-
         luadns)
-            {
-                grep -v "^LUA_Key=" "$account_conf" 2>/dev/null || true
-                grep -v "^LUA_Email=" "$account_conf" 2>/dev/null || true
-                echo "LUA_Key=$LUA_KEY"
-                echo "LUA_Email=$LUA_EMAIL"
-            } > "${account_conf}.tmp" && mv "${account_conf}.tmp" "$account_conf"
-
             export LUA_Key="$LUA_KEY"
             export LUA_Email="$LUA_EMAIL"
             ;;
-
         he)
-            {
-                grep -v "^HE_Username=" "$account_conf" 2>/dev/null || true
-                grep -v "^HE_Password=" "$account_conf" 2>/dev/null || true
-                echo "HE_Username=$HE_USERNAME"
-                echo "HE_Password=$HE_PASSWORD"
-            } > "${account_conf}.tmp" && mv "${account_conf}.tmp" "$account_conf"
-
             export HE_Username="$HE_USERNAME"
             export HE_Password="$HE_PASSWORD"
             ;;
-
         cloudns)
-            {
-                grep -v "^CLOUDNS_AUTH_ID=" "$account_conf" 2>/dev/null || true
-                grep -v "^CLOUDNS_SUB_AUTH_ID=" "$account_conf" 2>/dev/null || true
-                grep -v "^CLOUDNS_AUTH_PASSWORD=" "$account_conf" 2>/dev/null || true
-
-                if [ -n "$CLOUDNS_SUB_AUTH_ID" ]; then
-                    echo "CLOUDNS_SUB_AUTH_ID=$CLOUDNS_SUB_AUTH_ID"
-                elif [ -n "$CLOUDNS_AUTH_ID" ]; then
-                    echo "CLOUDNS_AUTH_ID=$CLOUDNS_AUTH_ID"
-                fi
-                echo "CLOUDNS_AUTH_PASSWORD=$CLOUDNS_AUTH_PASSWORD"
-            } > "${account_conf}.tmp" && mv "${account_conf}.tmp" "$account_conf"
-
             if [ -n "$CLOUDNS_SUB_AUTH_ID" ]; then
                 export CLOUDNS_SUB_AUTH_ID="$CLOUDNS_SUB_AUTH_ID"
             elif [ -n "$CLOUDNS_AUTH_ID" ]; then
@@ -3204,58 +3469,24 @@ ensure_dns_creds() {
             export CLOUDNS_AUTH_PASSWORD="$CLOUDNS_AUTH_PASSWORD"
             ;;
         powerdns)
-            {
-                grep -v "^PDNS_Url=" "$account_conf" 2>/dev/null || true
-                grep -v "^PDNS_ServerId=" "$account_conf" 2>/dev/null || true
-                grep -v "^PDNS_Token=" "$account_conf" 2>/dev/null || true
-                grep -v "^PDNS_Ttl=" "$account_conf" 2>/dev/null || true
-                echo "PDNS_Url=$PDNS_Url"
-                echo "PDNS_ServerId=$PDNS_ServerId"
-                echo "PDNS_Token=$PDNS_Token"
-                echo "PDNS_Ttl=${PDNS_Ttl:-60}"
-            } > "${account_conf}.tmp" && mv "${account_conf}.tmp" "$account_conf"
-
             export PDNS_Url="$PDNS_Url"
             export PDNS_ServerId="$PDNS_ServerId"
             export PDNS_Token="$PDNS_Token"
             export PDNS_Ttl="${PDNS_Ttl:-60}"
             ;;
         1984hosting)
-            {
-                grep -v "^One984HOSTING_Username=" "$account_conf" 2>/dev/null || true
-                grep -v "^One984HOSTING_Password=" "$account_conf" 2>/dev/null || true
-                if [ -n "$One984HOSTING_Username" ]; then
-                    echo "One984HOSTING_Username=$One984HOSTING_Username"
-                fi
-                if [ -n "$One984HOSTING_Password" ]; then
-                    echo "One984HOSTING_Password=$One984HOSTING_Password"
-                fi
-            } > "${account_conf}.tmp" && mv "${account_conf}.tmp" "$account_conf"
-
-            export One984HOSTING_Username="$One984HOSTING_Username"
-            export One984HOSTING_Password="$One984HOSTING_Password"
-            warn "1984Hosting 登录信息仅在本次运行中使用，acme.sh 将在 account.conf 中保存返回的认证令牌"
+            if [ -n "$One984HOSTING_Username" ]; then
+                export One984HOSTING_Username="$One984HOSTING_Username"
+            fi
+            if [ -n "$One984HOSTING_Password" ]; then
+                export One984HOSTING_Password="$One984HOSTING_Password"
+            fi
+            warn "1984Hosting 登录信息仅在本次运行中使用，敏感凭据已加密保存"
             ;;
         desec)
-            {
-                grep -v "^DEDYN_TOKEN=" "$account_conf" 2>/dev/null || true
-                echo "DEDYN_TOKEN=$DEDYN_TOKEN"
-            } > "${account_conf}.tmp" && mv "${account_conf}.tmp" "$account_conf"
-
             export DEDYN_TOKEN="$DEDYN_TOKEN"
             ;;
         dynv6)
-            {
-                grep -v "^DYNV6_TOKEN=" "$account_conf" 2>/dev/null || true
-                grep -v "^KEY=" "$account_conf" 2>/dev/null || true
-                if [ -n "$DYNV6_TOKEN" ]; then
-                    echo "DYNV6_TOKEN=$DYNV6_TOKEN"
-                fi
-                if [ -n "$DYNV6_KEY" ]; then
-                    echo "KEY=$DYNV6_KEY"
-                fi
-            } > "${account_conf}.tmp" && mv "${account_conf}.tmp" "$account_conf"
-
             [ -n "$DYNV6_TOKEN" ] && export DYNV6_TOKEN="$DYNV6_TOKEN"
             if [ -n "$DYNV6_KEY" ]; then
                 export KEY="$DYNV6_KEY"
@@ -3268,7 +3499,8 @@ ensure_dns_creds() {
     esac
 
     DNS_PROVIDER_READY="true"
-    success "DNS 提供商配置完成"
+    sanitize_account_conf_secure
+    return 0
 }
 
 setup_dns_provider() { ensure_dns_creds "$@"; }
@@ -3331,6 +3563,7 @@ ensure_acme_account_for_server() {
     fi
 
     "$ACME_HOME/acme.sh" --set-default-ca --server "$server" >/dev/null 2>&1 || true
+    sanitize_account_conf_secure
 
     if [ "$server" = "zerossl" ]; then
         : "${ZEROSSL_EAB_KID:=}"
@@ -3368,6 +3601,8 @@ ensure_acme_account_for_server() {
             "$ACME_HOME/acme.sh" --register-account -m "$candidate_email" --server "$server" 2>&1 | tee -a "$LOG_FILE"
             cmd_status=${PIPESTATUS[0]}
         fi
+
+        sanitize_account_conf_secure
 
         if [ $cmd_status -eq 0 ]; then
             success "ACME 账户注册成功 (CA: $server, 邮箱: $candidate_email)"
@@ -3617,9 +3852,17 @@ install_certificate() {
     
     mkdir -p "$cert_dir" "$key_dir"
     
+    local install_status=0
     if "$ACME_HOME/acme.sh" --install-cert -d "$DOMAIN" \
         --key-file "$KEY_PATH" \
         --fullchain-file "$CERT_PATH" >/dev/null 2>&1; then
+        install_status=0
+    else
+        install_status=$?
+    fi
+    sanitize_account_conf_secure
+
+    if [ $install_status -eq 0 ]; then
         success "证书安装成功"
         
         # 设置自动续期安装
@@ -3666,10 +3909,18 @@ setup_auto_renewal() {
     fi
     
     # 使用 acme.sh 的安装证书功能设置自动续期
+    local renew_install_status=0
     if "$ACME_HOME/acme.sh" --install-cert -d "$DOMAIN" \
         --key-file "$KEY_PATH" \
         --fullchain-file "$CERT_PATH" \
         --reloadcmd "$reload_cmd" >/dev/null 2>&1; then
+        renew_install_status=0
+    else
+        renew_install_status=$?
+    fi
+    sanitize_account_conf_secure
+
+    if [ $renew_install_status -eq 0 ]; then
         success "自动续期安装配置成功"
         info "证书续期时将自动更新到: $CERT_PATH, $KEY_PATH"
     else
@@ -3825,6 +4076,7 @@ renew_certificate() {
         if "$ACME_HOME/acme.sh" --renew -d "$domain_to_renew" --force --httpport "$HTTP_PORT"; then
             renew_success=true
         fi
+        sanitize_account_conf_secure
         restore_standalone_ports
     elif [ "$VALIDATION_METHOD" = "tls" ]; then
         local svc_t=$(get_service_using_port "$TLS_PORT")
@@ -3832,11 +4084,13 @@ renew_certificate() {
         if "$ACME_HOME/acme.sh" --renew -d "$domain_to_renew" --force --tlsport "$TLS_PORT"; then
             renew_success=true
         fi
+        sanitize_account_conf_secure
         restore_standalone_ports
     else
         if "$ACME_HOME/acme.sh" --renew -d "$domain_to_renew" --force; then
             renew_success=true
         fi
+        sanitize_account_conf_secure
     fi
 
     if [ "$renew_success" = "true" ]; then
@@ -3902,7 +4156,15 @@ renew_all_certificates() {
         fi
     fi
 
+    local renew_all_status=0
     if "$ACME_HOME/acme.sh" --renew-all --force; then
+        renew_all_status=0
+    else
+        renew_all_status=$?
+    fi
+    sanitize_account_conf_secure
+
+    if [ $renew_all_status -eq 0 ]; then
         success "所有证书续期成功"
         send_notification "success" "批量证书续期成功" "所有证书已通过 acme.sh 续期"
         CURRENT_OPERATION="$previous_operation"
@@ -4115,7 +4377,14 @@ remove_certificate() {
     step "开始卸载证书"
     
     # 移除 acme.sh 中的证书
+    local remove_status=0
     if "$ACME_HOME/acme.sh" --remove -d "$domain_to_remove" >/dev/null 2>&1; then
+        remove_status=0
+    else
+        remove_status=$?
+    fi
+    sanitize_account_conf_secure
+    if [ $remove_status -eq 0 ]; then
         success "证书从 acme.sh 中移除成功"
     else
         warn "从 acme.sh 移除证书失败，可能证书不存在"
@@ -4148,6 +4417,7 @@ uninstall_acme() {
     
     step "开始卸载 acme.sh"
     
+    sanitize_account_conf_secure
     if [ -f "$ACME_HOME/acme.sh" ]; then
         if "$ACME_HOME/acme.sh" --uninstall >/dev/null 2>&1; then
             success "acme.sh 卸载成功"
