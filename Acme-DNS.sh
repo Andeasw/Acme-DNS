@@ -161,6 +161,43 @@ generate_default_email() {
     echo "${random_part}@${domain}"
 }
 
+# 路径解析工具
+resolve_path() {
+    local target="$1"
+
+    if [ -z "$target" ]; then
+        return 1
+    fi
+
+    local resolved=""
+
+    if command -v readlink >/dev/null 2>&1; then
+        resolved=$(readlink -f "$target" 2>/dev/null || true)
+    fi
+
+    if [ -z "$resolved" ] && command -v realpath >/dev/null 2>&1; then
+        resolved=$(realpath "$target" 2>/dev/null || true)
+    fi
+
+    if [ -z "$resolved" ]; then
+        local dir
+        dir=$(cd "$(dirname "$target")" 2>/dev/null && pwd -P 2>/dev/null) || return 1
+        resolved="$dir/$(basename "$target")"
+    fi
+
+    printf '%s\n' "$resolved"
+}
+
+# 检测是否可无密码使用 sudo
+can_use_passwordless_sudo() {
+    if command -v sudo >/dev/null 2>&1; then
+        if sudo -n true >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
 # 日志函数
 _now() { date '+%Y-%m-%d %H:%M:%S'; }
 log() {
@@ -217,7 +254,6 @@ step() { log STEP "$@"; }
 debug() { log DEBUG "$@"; }
 
 # 快速启动配置
-QUICK_START_CONFIGURED="${QUICK_START_CONFIGURED:-false}"
 QUICK_START_FLAG_FILE="$HOME/.acme-dns-quick-start"
 
 # 加密/解密函数 (用于配置文件存储)
@@ -233,53 +269,129 @@ encrypt_credential() {
 # DNS传播等待倒计时显示
 show_dns_propagation_countdown() {
     local wait_seconds="${1:-120}"
+
+    if ! [[ "$wait_seconds" =~ ^[0-9]+$ ]]; then
+        info "跳过DNS传播等待"
+        return 0
+    fi
+
+    if [ "$wait_seconds" -le 0 ]; then
+        info "跳过DNS传播等待"
+        return 0
+    fi
+
     info "等待DNS记录传播 (${wait_seconds}秒)..."
-    
+
+    if [ "$SILENT_MODE" = "true" ] || [ ! -t 1 ]; then
+        sleep "$wait_seconds"
+        info "DNS记录传播等待完成 (共${wait_seconds}秒)"
+        return 0
+    fi
+
     local remaining=$wait_seconds
+    local progress_template="[等待] DNS传播中... 剩余时间: %3d 秒"
+    local finished_template="[完成] DNS记录传播等待完成 (共%3d秒)"
+    local width=${#progress_template}
+
+    if [ ${#finished_template} -gt "$width" ]; then
+        width=${#finished_template}
+    fi
+
     while [ $remaining -gt 0 ]; do
-        printf "\r${CYAN}[等待] DNS传播中... 剩余时间: %3d 秒${NC}" $remaining
+        local msg
+        printf -v msg "$progress_template" "$remaining"
+        printf '\r%b%-*s%b' "$CYAN" "$width" "$msg" "$NC"
         sleep 1
         remaining=$((remaining - 1))
     done
-    printf "\r${GREEN}[完成] DNS记录传播等待完成 (共${wait_seconds}秒)          ${NC}\n"
+
+    local final_msg
+    printf -v final_msg "$finished_template" "$wait_seconds"
+    printf '\r%b%-*s%b\n' "$GREEN" "$width" "$final_msg" "$NC"
 }
 
 # 设置快速启动
 setup_quick_start() {
-    local script_path="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
-    
-    if [ -f "$QUICK_START_FLAG_FILE" ]; then
-        info "快速启动已配置"
+    local script_base_path
+    script_base_path="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+
+    local script_real_path="$script_base_path"
+    if ! script_real_path=$(resolve_path "$script_base_path" 2>/dev/null); then
+        script_real_path="$script_base_path"
+    fi
+
+    local -a shortcut_candidates=("/usr/local/bin/ssl" "$HOME/.local/bin/ssl")
+    local existing_shortcut=""
+    local conflict_notified="false"
+
+    for candidate in "${shortcut_candidates[@]}"; do
+        if [ -e "$candidate" ]; then
+            local target_path=""
+            if target_path=$(resolve_path "$candidate" 2>/dev/null); then
+                if [ "$target_path" = "$script_real_path" ]; then
+                    existing_shortcut="$candidate"
+                    break
+                elif [ "$conflict_notified" = "false" ]; then
+                    warn "检测到现有的 ssl 命令指向 ${target_path}，将尝试重新配置"
+                    conflict_notified="true"
+                fi
+            fi
+        fi
+    done
+
+    if [ -n "$existing_shortcut" ]; then
+        info "快速启动已配置: ssl -> $existing_shortcut"
+        if ! printf '%s\n' "$existing_shortcut" > "$QUICK_START_FLAG_FILE" 2>/dev/null; then
+            touch "$QUICK_START_FLAG_FILE" 2>/dev/null || true
+        fi
         return 0
     fi
-    
-    if prompt_yesno "是否启用快速访问？(下次可通过输入 'ssl' 命令快速启动)" "y"; then
-        if [ -w "/usr/local/bin" ] || sudo -n true 2>/dev/null; then
-            local need_sudo="false"
-            if [ ! -w "/usr/local/bin" ]; then
-                need_sudo="true"
-            fi
-            
-            if [ "$need_sudo" = "true" ]; then
-                if sudo ln -sf "$script_path" /usr/local/bin/ssl 2>/dev/null; then
-                    success "已创建快速启动命令: ssl"
-                    touch "$QUICK_START_FLAG_FILE"
-                    info "提示: 现在可以在任何目录下输入 'ssl' 来启动证书管理器"
+
+    if [ -f "$QUICK_START_FLAG_FILE" ]; then
+        warn "检测到失效的快速启动配置，准备重新创建..."
+    fi
+
+    if ! prompt_yesno "是否启用快速访问？(下次可通过输入 'ssl' 命令快速启动)" "y"; then
+        return 0
+    fi
+
+    local created_shortcut=""
+    for candidate in "${shortcut_candidates[@]}"; do
+        local candidate_dir
+        candidate_dir=$(dirname "$candidate")
+
+        if [ ! -d "$candidate_dir" ]; then
+            if ! mkdir -p "$candidate_dir" 2>/dev/null; then
+                if can_use_passwordless_sudo && sudo mkdir -p "$candidate_dir" 2>/dev/null; then
+                    :
                 else
-                    warn "无法创建快速启动命令，需要sudo权限"
-                fi
-            else
-                if ln -sf "$script_path" /usr/local/bin/ssl 2>/dev/null; then
-                    success "已创建快速启动命令: ssl"
-                    touch "$QUICK_START_FLAG_FILE"
-                    info "提示: 现在可以在任何目录下输入 'ssl' 来启动证书管理器"
-                else
-                    warn "无法创建快速启动命令"
+                    continue
                 fi
             fi
-        else
-            warn "无法创建快速启动命令，/usr/local/bin 目录不可写且无sudo权限"
         fi
+
+        if ln -sf "$script_real_path" "$candidate" 2>/dev/null; then
+            created_shortcut="$candidate"
+            break
+        fi
+
+        if can_use_passwordless_sudo && sudo ln -sf "$script_real_path" "$candidate" 2>/dev/null; then
+            created_shortcut="$candidate"
+            break
+        fi
+    done
+
+    if [ -n "$created_shortcut" ]; then
+        success "已创建快速启动命令: ssl"
+        if ! printf '%s\n' "$created_shortcut" > "$QUICK_START_FLAG_FILE" 2>/dev/null; then
+            touch "$QUICK_START_FLAG_FILE" 2>/dev/null || true
+        fi
+        if [[ "$created_shortcut" == "$HOME/.local/bin/"* ]]; then
+            info "提示: 如未生效，请确认 $HOME/.local/bin 已添加到 PATH"
+        fi
+        info "提示: 现在可以在任何目录下输入 'ssl' 来启动证书管理器"
+    else
+        warn "无法创建快速启动命令，请确保具有写入 /usr/local/bin 或 $HOME/.local/bin 的权限"
     fi
 }
 
