@@ -273,7 +273,6 @@ declare -a SENSITIVE_CONFIG_VARS=(
     "DYNV6_KEY"
     "TELEGRAM_BOT_TOKEN"
     "WEBHOOK_URL"
-    "FREEDNS_Password"
 )
 
 hash_password_secure() {
@@ -694,7 +693,7 @@ setup_quick_start() {
             info "快速启动已配置: ssl -> $current_target"
             return 0
         fi
-        if ! prompt_yesno "是否设置快捷命令 'ssl' 以便下次快速启动?" "y"; then
+        if ! prompt_yesno "是否设置快捷命令 'ssl' 以便下次快速启动?" "n"; then
             return 0
         fi
     fi
@@ -2112,9 +2111,11 @@ quick_config() {
         fi
     fi
     
-    if prompt_yesno "是否需要修改ACME服务器配置?" "n"; then
-        step "ACME服务器配置"
-        configure_acme_server
+    if [ -z "$ACME_SERVER" ]; then
+        ACME_SERVER="letsencrypt"
+        info "ACME 服务器默认设置为 Let's Encrypt"
+    else
+        info "ACME 服务器: $ACME_SERVER"
     fi
     
     if prompt_yesno "是否配置后续脚本?" "n"; then
@@ -2711,13 +2712,13 @@ validate_config() {
                     PDNS_ServerId="localhost"
                 fi
                 ;;
-            freedns)
-                if [ -z "$FREEDNS_User" ]; then
-                    error "FreeDNS 用户ID 未设置"
+            1984hosting)
+                if [ -z "$One984HOSTING_Username" ]; then
+                    error "1984Hosting 用户名未设置"
                     errors=$((errors + 1))
                 fi
-                if [ -z "$FREEDNS_Password" ]; then
-                    error "FreeDNS 登录密码未设置"
+                if [ -z "$One984HOSTING_Password" ]; then
+                    error "1984Hosting 登录密码未设置"
                     errors=$((errors + 1))
                 fi
                 ;;
@@ -2837,14 +2838,14 @@ show_config() {
                 fi
                 echo "  • TXT 记录 TTL: ${PDNS_Ttl:-60} 秒"
                 ;;
-            freedns)
-                echo "  • FreeDNS 用户ID: ${FREEDNS_User:-未设置}"
-                if [ -n "$FREEDNS_Password" ]; then
-                    echo "  • FreeDNS 密码: ${FREEDNS_Password:0:3}******"
+            1984hosting)
+                echo "  • 1984Hosting 用户名: ${One984HOSTING_Username:-未设置}"
+                if [ -n "$One984HOSTING_Password" ]; then
+                    echo "  • 1984Hosting 密码: ${One984HOSTING_Password:0:3}******"
                 else
-                    echo "  • FreeDNS 密码: 未设置"
+                    echo "  • 1984Hosting 密码: 未设置"
                 fi
-                echo "  • 提示: 首次验证后会自动缓存会话令牌"
+                echo "  • 提示: 首次登录后会自动缓存认证令牌"
                 ;;
             desec)
                 if [ -n "$DEDYN_TOKEN" ]; then
@@ -3062,7 +3063,6 @@ PDNS_Url="$PDNS_Url"
 PDNS_ServerId="$PDNS_ServerId"
 PDNS_Ttl="$PDNS_Ttl"
 One984HOSTING_Username="$One984HOSTING_Username"
-FREEDNS_User="${FREEDNS_User:-}"
 
 # 证书路径配置
 CERT_PATH="$CERT_PATH"
@@ -3121,7 +3121,6 @@ DYNV6_TOKEN_ENC="${DYNV6_TOKEN_ENC:-}"
 DYNV6_KEY_ENC="${DYNV6_KEY_ENC:-}"
 TELEGRAM_BOT_TOKEN_ENC="${TELEGRAM_BOT_TOKEN_ENC:-}"
 WEBHOOK_URL_ENC="${WEBHOOK_URL_ENC:-}"
-FREEDNS_Password_ENC="${FREEDNS_Password_ENC:-}"
 EOF
 
     chmod 600 "$config_file"
@@ -4759,8 +4758,8 @@ show_menu() {
     echo -e "${CYAN} 10) [通知设置] 配置通知渠道${NC}"
     echo -e "${CYAN} 11) [保存配置] 保存当前配置${NC}"
     echo -e "${CYAN} 12) [加载配置] 从文件加载配置${NC}"
-    echo -e "${CYAN} 13) [帮助] 显示帮助说明${NC}"
-    echo -e "${CYAN} 14) [快捷启动] 配置 'ssl' 快捷命令${NC}"
+    echo -e "${CYAN} 13) [快捷启动] 配置 'ssl' 快捷命令${NC}"
+    echo -e "${CYAN} 14) [帮助] 显示帮助说明${NC}"
     echo -e "${GREEN}  0) [退出] 安全退出程序${NC}"
     echo
 }
@@ -4810,10 +4809,10 @@ main_menu() {
                 load_config
                 ;;
             13)
-                show_help
+                setup_quick_start menu
                 ;;
             14)
-                setup_quick_start menu
+                show_help
                 ;;
             0)
                 info "感谢使用，再见！"
@@ -4877,7 +4876,7 @@ show_help() {
     echo "  • Hurricane Electric (HE)"
     echo "  • ClouDNS"
     echo "  • PowerDNS (Self-hosted)"
-    echo "  • FreeDNS (⚠️ 无官方API)"
+    echo "  • 1984Hosting (网站登录令牌)"
     echo "  • deSEC.io (Free dynDNS)"
     echo "  • dynv6 (HTTP/SSH双模式)"
     echo
@@ -4890,7 +4889,7 @@ show_help() {
     echo "  TLS_PORT               TLS验证端口 (默认: 443)"
     echo "  WEBROOT_PATH           Webroot 路径（HTTP验证兜底）"
     echo "  SKIP_PORT_CHECK        跳过端口检查 (true/false)"
-    echo "  DNS_PROVIDER           DNS提供商: cloudflare, luadns, he, cloudns, powerdns, freedns, desec, dynv6"
+    echo "  DNS_PROVIDER           DNS提供商: cloudflare, luadns, he, cloudns, powerdns, 1984hosting, desec, dynv6"
     echo "  CF_Token               CloudFlare API Token (推荐)"
     echo "  CF_Zone_ID             CloudFlare Zone ID (可选)"
     echo "  CF_Account_ID          CloudFlare Account ID (可选)"
@@ -4907,8 +4906,8 @@ show_help() {
     echo "  PDNS_ServerId          PowerDNS Server ID (默认: localhost)"
     echo "  PDNS_Token             PowerDNS API Token"
     echo "  PDNS_Ttl               PowerDNS TXT 记录 TTL (默认: 60秒)"
-    echo "  FREEDNS_User           FreeDNS 用户ID"
-    echo "  FREEDNS_Password       FreeDNS 登录密码 (首次运行必需)"
+    echo "  One984HOSTING_Username 1984Hosting 用户名"
+    echo "  One984HOSTING_Password 1984Hosting 登录密码 (首次登录会缓存令牌)"
     echo "  DEDYN_TOKEN            deSEC API Token"
     echo "  DYNV6_TOKEN            dynv6 HTTP Token"
     echo "  DYNV6_KEY              dynv6 SSH Key 路径 (可选)"
