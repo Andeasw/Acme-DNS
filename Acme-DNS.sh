@@ -310,101 +310,369 @@ show_dns_propagation_countdown() {
     printf '\r%b%-*s%b\n' "$GREEN" "$width" "$final_msg" "$NC"
 }
 
-# 设置快速启动
-setup_quick_start() {
-    local script_base_path
-    script_base_path="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+ensure_quick_launch_directory() {
+    local target="$1"
 
-    local script_real_path="$script_base_path"
-    if ! script_real_path=$(resolve_path "$script_base_path" 2>/dev/null); then
-        script_real_path="$script_base_path"
+    if [ -z "$target" ]; then
+        return 1
     fi
 
-    local -a shortcut_candidates=("/usr/local/bin/ssl" "$HOME/.local/bin/ssl")
-    local existing_shortcut=""
-    local conflict_notified="false"
+    local dir
+    dir=$(dirname "$target")
 
-    for candidate in "${shortcut_candidates[@]}"; do
-        if [ -e "$candidate" ]; then
-            local target_path=""
-            if target_path=$(resolve_path "$candidate" 2>/dev/null); then
-                if [ "$target_path" = "$script_real_path" ]; then
-                    existing_shortcut="$candidate"
-                    break
-                elif [ "$conflict_notified" = "false" ]; then
-                    warn "检测到现有的 ssl 命令指向 ${target_path}，将尝试重新配置"
-                    conflict_notified="true"
-                fi
-            fi
+    if [ -d "$dir" ]; then
+        return 0
+    fi
+
+    if mkdir -p "$dir" 2>/dev/null; then
+        return 0
+    fi
+
+    return 1
+}
+
+select_quick_launch_path() {
+    local candidate=""
+    for candidate in "$HOME/bin/ssl" "$HOME/.local/bin/ssl"; do
+        if ensure_quick_launch_directory "$candidate"; then
+            printf '%s\n' "$candidate"
+            return 0
         fi
     done
+    printf '%s\n' ""
+    return 1
+}
 
-    if [ -n "$existing_shortcut" ]; then
-        info "快速启动已配置: ssl -> $existing_shortcut"
-        if ! printf '%s\n' "$existing_shortcut" > "$QUICK_START_FLAG_FILE" 2>/dev/null; then
-            touch "$QUICK_START_FLAG_FILE" 2>/dev/null || true
+ensure_quick_launch_path_exported() {
+    local target="$1"
+    if [ -z "$target" ]; then
+        return 0
+    fi
+
+    local quick_dir
+    quick_dir=$(dirname "$target")
+    if [ -z "$quick_dir" ]; then
+        return 0
+    fi
+
+    if [[ ":$PATH:" != *":$quick_dir:"* ]]; then
+        export PATH="$quick_dir:$PATH"
+        warn "PATH 中未包含 $quick_dir，已临时添加到当前会话"
+        local shell_rc=""
+        if [ -n "${BASH_VERSION:-}" ] && [ -f "$HOME/.bashrc" ]; then
+            shell_rc="$HOME/.bashrc"
+        elif [ -n "${ZSH_VERSION:-}" ] && [ -f "$HOME/.zshrc" ]; then
+            shell_rc="$HOME/.zshrc"
+        elif [ -f "$HOME/.bashrc" ]; then
+            shell_rc="$HOME/.bashrc"
+        elif [ -f "$HOME/.zshrc" ]; then
+            shell_rc="$HOME/.zshrc"
         fi
-        return 0
+
+        if [ -n "$shell_rc" ] && prompt_yesno "是否将 $quick_dir 写入 $shell_rc 以便下次登录自动生效?" "y"; then
+            local export_line="export PATH=\"$quick_dir:\$PATH\""
+            if ! grep -Fq "$export_line" "$shell_rc" 2>/dev/null; then
+                printf '\n%s\n' "$export_line" >> "$shell_rc"
+                info "已将 $quick_dir 添加到 $shell_rc"
+                info "执行 \"source $shell_rc\" 或重新登录以使 PATH 生效"
+            else
+                info "$shell_rc 已包含 $quick_dir 配置"
+            fi
+        else
+            info "请手动确保 PATH 中包含: $quick_dir (示例: export PATH=\"$quick_dir:\$PATH\")"
+        fi
     fi
 
-    if [ -f "$QUICK_START_FLAG_FILE" ]; then
-        warn "检测到失效的快速启动配置，准备重新创建..."
+    hash -r 2>/dev/null || true
+    return 0
+}
+
+# 设置快速启动
+setup_quick_start() {
+    local invocation="${1:-auto}"
+    local allow_multiple="false"
+
+    if [ "$invocation" != "auto" ]; then
+        allow_multiple="true"
+        title "快捷启动设置"
     fi
 
-    if ! prompt_yesno "是否启用快速访问？(下次可通过输入 'ssl' 命令快速启动)" "y"; then
-        return 0
+    local quick_flag_path="$QUICK_START_FLAG_FILE"
+    local stored_target=""
+    if [ -f "$quick_flag_path" ]; then
+        stored_target=$(cat "$quick_flag_path" 2>/dev/null || echo "")
     fi
 
-    local created_shortcut=""
-    for candidate in "${shortcut_candidates[@]}"; do
-        local candidate_dir
-        candidate_dir=$(dirname "$candidate")
+    local current_target=""
+    if type -P ssl >/dev/null 2>&1; then
+        current_target=$(type -P ssl)
+    elif [ -n "$stored_target" ]; then
+        current_target="$stored_target"
+    fi
 
-        if [ ! -d "$candidate_dir" ]; then
-            if ! mkdir -p "$candidate_dir" 2>/dev/null; then
-                if can_use_passwordless_sudo && sudo mkdir -p "$candidate_dir" 2>/dev/null; then
-                    :
+    if [ "$invocation" = "auto" ]; then
+        if [ -n "$current_target" ] && [ -x "$current_target" ]; then
+            info "快速启动已配置: ssl -> $current_target"
+            return 0
+        fi
+        if ! prompt_yesno "是否设置快捷命令 'ssl' 以便下次快速启动?" "y"; then
+            return 0
+        fi
+    fi
+
+    while true; do
+        echo
+        if [ -n "$current_target" ] && [ -f "$current_target" ]; then
+            info "当前快捷命令: ssl -> $current_target"
+        else
+            info "当前尚未配置快捷命令 'ssl'"
+        fi
+
+        echo -e "${CYAN}请选择操作:${NC}"
+        echo "  1) 创建快捷命令 (在线脚本)"
+        echo "  2) 创建快捷命令 (使用当前脚本)"
+        echo "  3) 创建快捷命令 (自定义本地脚本)"
+        echo "  4) 移除快捷命令"
+        echo "  0) 返回"
+        echo -e "${CYAN}请选择 [0-4]: ${NC}"
+        read -r quick_choice
+
+        local completed=false
+
+        case "$quick_choice" in
+            0)
+                break
+                ;;
+            1)
+                local target_path=""
+                target_path=$(select_quick_launch_path) || target_path=""
+                if [ -z "$target_path" ]; then
+                    warn "无法确定快捷命令保存路径"
+                    continue
+                fi
+                if [ -f "$target_path" ] && ! prompt_yesno "检测到已存在快捷命令 ($target_path)，是否覆盖?" "y"; then
+                    continue
+                fi
+                if ! ensure_quick_launch_directory "$target_path"; then
+                    warn "无法创建目录: $(dirname "$target_path")"
+                    continue
+                fi
+                if ! cat <<'EOF' > "$target_path"; then
+#!/bin/bash
+set -euo pipefail
+
+if ! command -v curl >/dev/null 2>&1; then
+    echo "curl 未安装，无法下载在线脚本" >&2
+    exit 1
+fi
+
+exec bash <(curl -fsSL https://raw.githubusercontent.com/227575/Acme-DNS/main/Acme-DNS.sh) "$@"
+EOF
+                    warn "写入快捷命令失败: $target_path"
+                    continue
+                fi
+                chmod +x "$target_path" 2>/dev/null || true
+                current_target="$target_path"
+                printf '%s\n' "$current_target" > "$quick_flag_path" 2>/dev/null || true
+                ensure_quick_launch_path_exported "$current_target"
+                success "已创建快捷命令: ssl (在线脚本)"
+                info "现在可以在任何目录直接运行: ssl"
+                completed=true
+                ;;
+            2)
+                local target_path=""
+                target_path=$(select_quick_launch_path) || target_path=""
+                if [ -z "$target_path" ]; then
+                    warn "无法确定快捷命令保存路径"
+                    continue
+                fi
+                if [ -f "$target_path" ] && ! prompt_yesno "检测到已存在快捷命令 ($target_path)，是否覆盖?" "y"; then
+                    continue
+                fi
+                if ! ensure_quick_launch_directory "$target_path"; then
+                    warn "无法创建目录: $(dirname "$target_path")"
+                    continue
+                fi
+                local script_real_path=""
+                script_real_path=$(resolve_path "$0" 2>/dev/null || true)
+                if [ -z "$script_real_path" ]; then
+                    script_real_path="$0"
+                fi
+                if [ ! -f "$script_real_path" ]; then
+                    warn "未找到当前脚本路径: $script_real_path"
+                    continue
+                fi
+                if ! cat <<EOF > "$target_path"; then
+#!/bin/bash
+set -euo pipefail
+SCRIPT_PATH="$script_real_path"
+
+if [ ! -f "\$SCRIPT_PATH" ]; then
+    echo "未找到本地脚本: \$SCRIPT_PATH" >&2
+    exit 1
+fi
+
+exec "\$SCRIPT_PATH" "\$@"
+EOF
+                    warn "写入快捷命令失败: $target_path"
+                    continue
+                fi
+                chmod +x "$target_path" 2>/dev/null || true
+                current_target="$target_path"
+                printf '%s\n' "$current_target" > "$quick_flag_path" 2>/dev/null || true
+                ensure_quick_launch_path_exported "$current_target"
+                success "已创建快捷命令: ssl (当前脚本)"
+                info "现在可以在任何目录直接运行: ssl"
+                completed=true
+                ;;
+            3)
+                local custom_path=""
+                echo -e "${CYAN}请输入本地脚本绝对路径:${NC}"
+                read -r custom_path
+                custom_path=$(trim_spaces "$custom_path")
+                if [ -z "$custom_path" ]; then
+                    warn "路径不能为空"
+                    continue
+                fi
+                local resolved_path=""
+                resolved_path=$(resolve_path "$custom_path" 2>/dev/null || true)
+                if [ -n "$resolved_path" ]; then
+                    custom_path="$resolved_path"
+                fi
+                if [ ! -f "$custom_path" ]; then
+                    warn "指定的脚本不存在: $custom_path"
+                    continue
+                fi
+                local target_path=""
+                target_path=$(select_quick_launch_path) || target_path=""
+                if [ -z "$target_path" ]; then
+                    warn "无法确定快捷命令保存路径"
+                    continue
+                fi
+                if [ -f "$target_path" ] && ! prompt_yesno "检测到已存在快捷命令 ($target_path)，是否覆盖?" "y"; then
+                    continue
+                fi
+                if ! ensure_quick_launch_directory "$target_path"; then
+                    warn "无法创建目录: $(dirname "$target_path")"
+                    continue
+                fi
+                if ! cat <<EOF > "$target_path"; then
+#!/bin/bash
+set -euo pipefail
+SCRIPT_PATH="$custom_path"
+
+if [ ! -f "\$SCRIPT_PATH" ]; then
+    echo "未找到本地脚本: \$SCRIPT_PATH" >&2
+    exit 1
+fi
+
+exec "\$SCRIPT_PATH" "\$@"
+EOF
+                    warn "写入快捷命令失败: $target_path"
+                    continue
+                fi
+                chmod +x "$target_path" 2>/dev/null || true
+                current_target="$target_path"
+                printf '%s\n' "$current_target" > "$quick_flag_path" 2>/dev/null || true
+                ensure_quick_launch_path_exported "$current_target"
+                success "已创建快捷命令: ssl (本地脚本)"
+                info "快捷命令将执行: $custom_path"
+                completed=true
+                ;;
+            4)
+                if ! prompt_yesno "确认移除快捷命令 'ssl' ?" "y"; then
+                    continue
+                fi
+                local removed=false
+                local candidate_path=""
+                for candidate_path in "$current_target" "$HOME/bin/ssl" "$HOME/.local/bin/ssl"; do
+                    if [ -n "$candidate_path" ] && [ -f "$candidate_path" ]; then
+                        if [[ "$candidate_path" == "$HOME/"* ]]; then
+                            if rm -f "$candidate_path" 2>/dev/null; then
+                                removed=true
+                            fi
+                        fi
+                    fi
+                done
+                if [ "$removed" = true ]; then
+                    rm -f "$quick_flag_path" 2>/dev/null || true
+                    hash -r 2>/dev/null || true
+                    current_target=""
+                    success "已移除快捷命令 'ssl'"
+                    completed=true
                 else
+                    warn "未找到可移除的快捷命令文件 (仅移除位于 $HOME/bin 或 $HOME/.local/bin 的文件)"
+                fi
+                ;;
+            *)
+                error "无效选择，请输入 0-4 之间的数字"
+                ;;
+        esac
+
+        if [ "$completed" = true ]; then
+            if [ "$allow_multiple" = "true" ]; then
+                if prompt_yesno "是否继续配置快捷命令?" "n"; then
                     continue
                 fi
             fi
-        fi
-
-        if ln -sf "$script_real_path" "$candidate" 2>/dev/null; then
-            created_shortcut="$candidate"
-            break
-        fi
-
-        if can_use_passwordless_sudo && sudo ln -sf "$script_real_path" "$candidate" 2>/dev/null; then
-            created_shortcut="$candidate"
             break
         fi
     done
 
-    if [ -n "$created_shortcut" ]; then
-        success "已创建快速启动命令: ssl"
-        if ! printf '%s\n' "$created_shortcut" > "$QUICK_START_FLAG_FILE" 2>/dev/null; then
-            touch "$QUICK_START_FLAG_FILE" 2>/dev/null || true
-        fi
-        if [[ "$created_shortcut" == "$HOME/.local/bin/"* ]]; then
-            info "提示: 如未生效，请确认 $HOME/.local/bin 已添加到 PATH"
-        fi
-        info "提示: 现在可以在任何目录下输入 'ssl' 来启动证书管理器"
-    else
-        warn "无法创建快速启动命令，请确保具有写入 /usr/local/bin 或 $HOME/.local/bin 的权限"
-    fi
+    return 0
 }
 
 run_acme() {
     local use_tee="true"
-    if [ "${1:-}" = "--no-tee" ]; then
-        use_tee="false"
-        shift
-    fi
+    local monitor_dns_wait="false"
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --no-tee)
+                use_tee="false"
+                shift
+                ;;
+            --monitor-dns-wait)
+                monitor_dns_wait="true"
+                shift
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
 
     local acme_bin="$ACME_HOME/acme.sh"
     if [ ! -x "$acme_bin" ]; then
         fatal "未找到 acme.sh，请先安装"
+    fi
+
+    if [ "$monitor_dns_wait" = "true" ]; then
+        local exit_status=0
+        local line=""
+        local wait_seconds=""
+        if [ "$use_tee" = "true" ]; then
+            "$acme_bin" "$@" 2>&1 | tee -a "$LOG_FILE" | while IFS= read -r line || [ -n "$line" ]; do
+                if [[ "$line" =~ Sleeping\ for\ ([0-9]+)\ seconds ]]; then
+                    wait_seconds="${BASH_REMATCH[1]}"
+                    show_dns_propagation_countdown "$wait_seconds"
+                fi
+            done
+            exit_status=$?
+        else
+            "$acme_bin" "$@" 2>&1 | while IFS= read -r line || [ -n "$line" ]; do
+                printf '%s\n' "$line"
+                if [ -n "$LOG_FILE" ]; then
+                    printf '%s\n' "$line" >> "$LOG_FILE"
+                fi
+                if [[ "$line" =~ Sleeping\ for\ ([0-9]+)\ seconds ]]; then
+                    wait_seconds="${BASH_REMATCH[1]}"
+                    show_dns_propagation_countdown "$wait_seconds"
+                fi
+            done
+            exit_status=$?
+        fi
+        return $exit_status
     fi
 
     if [ "$use_tee" = "true" ]; then
@@ -412,6 +680,7 @@ run_acme() {
         return ${PIPESTATUS[0]}
     else
         "$acme_bin" "$@"
+        return $?
     fi
 }
 
@@ -2374,10 +2643,11 @@ modify_config() {
         echo "  5) ACME服务器配置"
         echo "  6) 通知配置"
         echo "  7) 后续脚本配置"
-        echo "  8) 返回主菜单"
+        echo "  8) 密钥类型配置"
+        echo "  9) 返回主菜单"
         echo
         
-        echo -e "${CYAN}请选择 [1-8]: ${NC}"
+        echo -e "${CYAN}请选择 [1-9]: ${NC}"
         read -r choice
         
         case "$choice" in
@@ -2426,11 +2696,15 @@ modify_config() {
                 fi
                 ;;
             8)
+                step "修改密钥类型"
+                select_key_type
+                ;;
+            9)
                 info "返回主菜单"
                 return 0
                 ;;
             *)
-                error "无效选择，请输入 1-8 之间的数字"
+                error "无效选择，请输入 1-9 之间的数字"
                 ;;
         esac
         
@@ -2466,6 +2740,9 @@ VALIDATION_METHOD="$VALIDATION_METHOD"
 HTTP_PORT="$HTTP_PORT"
 TLS_PORT="$TLS_PORT"
 SKIP_PORT_CHECK="$SKIP_PORT_CHECK"
+
+# 密钥类型
+KEY_TYPE="$KEY_TYPE"
 
 # DNS提供商配置
 DNS_PROVIDER="$DNS_PROVIDER"
@@ -2577,6 +2854,8 @@ load_config() {
     
     # 源配置文件
     source "$config_file"
+    KEY_TYPE=$(normalize_key_type "${KEY_TYPE:-rsa-2048}")
+    KEY_TYPE_SELECTED="true"
     success "配置已从文件加载: $config_file"
     show_config
 }
@@ -3208,15 +3487,13 @@ issue_certificate() {
                         break
                     fi
 
-                    "$ACME_HOME/acme.sh" --issue --dns "$dns_api" $domain_args --keylength "$keylength_arg" $ecc_flag --force 2>&1 | tee -a "$LOG_FILE"
-                    issue_status=${PIPESTATUS[0]}
-
-                    if [ $issue_status -eq 0 ]; then
+                    if run_acme --monitor-dns-wait --issue --dns "$dns_api" $domain_args --keylength "$keylength_arg" $ecc_flag --force; then
                         success "证书申请成功 [CA: $ca, 验证: DNS]"
                         used_ca="$ca"
                         issue_success=true
                         break 2
                     else
+                        issue_status=$?
                         warn "DNS 验证失败 [CA: $ca, 退出码: $issue_status]"
                         failure_summary+=("CA:$ca DNS失败:$issue_status")
                     fi
@@ -3232,15 +3509,14 @@ issue_certificate() {
                     fi
 
                     if [ "$standalone_ready" = true ]; then
-                        "$ACME_HOME/acme.sh" --issue --standalone $domain_args --httpport "$HTTP_PORT" --keylength "$keylength_arg" $ecc_flag --force 2>&1 | tee -a "$LOG_FILE"
-                        issue_status=${PIPESTATUS[0]}
-                        if [ $issue_status -eq 0 ]; then
+                        if run_acme --issue --standalone $domain_args --httpport "$HTTP_PORT" --keylength "$keylength_arg" $ecc_flag --force; then
                             success "证书申请成功 [CA: $ca, 验证: HTTP]"
                             restore_standalone_ports
                             used_ca="$ca"
                             issue_success=true
                             break 2
                         else
+                            issue_status=$?
                             warn "HTTP 验证失败 [CA: $ca, 退出码: $issue_status]"
                             failure_summary+=("CA:$ca HTTP失败:$issue_status")
                         fi
@@ -3249,14 +3525,13 @@ issue_certificate() {
 
                     if [ -n "$WEBROOT_PATH" ] && [ -d "$WEBROOT_PATH" ]; then
                         info "尝试使用 Webroot 验证: $WEBROOT_PATH"
-                        "$ACME_HOME/acme.sh" --issue -w "$WEBROOT_PATH" $domain_args --keylength "$keylength_arg" $ecc_flag --force 2>&1 | tee -a "$LOG_FILE"
-                        issue_status=${PIPESTATUS[0]}
-                        if [ $issue_status -eq 0 ]; then
+                        if run_acme --issue -w "$WEBROOT_PATH" $domain_args --keylength "$keylength_arg" $ecc_flag --force; then
                             success "证书申请成功 [CA: $ca, 验证: Webroot]"
                             used_ca="$ca"
                             issue_success=true
                             break 2
                         else
+                            issue_status=$?
                             warn "Webroot 验证失败 [CA: $ca, 退出码: $issue_status]"
                             failure_summary+=("CA:$ca Webroot失败:$issue_status")
                         fi
@@ -3273,15 +3548,14 @@ issue_certificate() {
                     fi
 
                     if [ "$standalone_ready" = true ]; then
-                        "$ACME_HOME/acme.sh" --issue --standalone $domain_args --tlsport "$TLS_PORT" --keylength "$keylength_arg" $ecc_flag --force 2>&1 | tee -a "$LOG_FILE"
-                        issue_status=${PIPESTATUS[0]}
-                        if [ $issue_status -eq 0 ]; then
+                        if run_acme --issue --standalone $domain_args --tlsport "$TLS_PORT" --keylength "$keylength_arg" $ecc_flag --force; then
                             success "证书申请成功 [CA: $ca, 验证: TLS]"
                             restore_standalone_ports
                             used_ca="$ca"
                             issue_success=true
                             break 2
                         else
+                            issue_status=$?
                             warn "TLS 验证失败 [CA: $ca, 退出码: $issue_status]"
                             failure_summary+=("CA:$ca TLS失败:$issue_status")
                         fi
@@ -3913,11 +4187,8 @@ install_certificate_auto_renew_menu() {
         return 1
     fi
 
-    if [ "$KEY_TYPE_SELECTED" = "true" ]; then
-        info "使用密钥类型: $KEY_TYPE"
-    else
-        select_key_type
-    fi
+    info "使用密钥类型: $KEY_TYPE (可在配置菜单中调整默认值)"
+    KEY_TYPE_SELECTED="true"
 
     local default_dir="/etc/ssl/${DOMAIN}"
     local default_cert_file="${default_dir}/${DOMAIN}.cer"
@@ -4116,16 +4387,9 @@ certificate_issue_flow() {
         fi
     fi
     
-    if [ "$KEY_TYPE_SELECTED" = "true" ]; then
-        info "使用密钥类型: $KEY_TYPE"
-    else
-        if prompt_yesno "是否调整密钥类型? (当前: $KEY_TYPE)" "n"; then
-            select_key_type
-        else
-            info "使用密钥类型: $KEY_TYPE"
-        fi
-    fi
-    
+    info "使用密钥类型: $KEY_TYPE (可在配置菜单中调整默认值)"
+    KEY_TYPE_SELECTED="true"
+
     # 显示最终配置确认
     step "最终配置确认"
     show_config
@@ -4226,6 +4490,7 @@ show_menu() {
     echo -e "${CYAN} 11) [保存配置] 保存当前配置${NC}"
     echo -e "${CYAN} 12) [加载配置] 从文件加载配置${NC}"
     echo -e "${CYAN} 13) [帮助] 显示帮助说明${NC}"
+    echo -e "${CYAN} 14) [快捷启动] 配置 'ssl' 快捷命令${NC}"
     echo -e "${GREEN}  0) [退出] 安全退出程序${NC}"
     echo
 }
@@ -4234,7 +4499,7 @@ show_menu() {
 main_menu() {
     while true; do
         show_menu
-        echo -e "${CYAN}请选择操作 [0-13]: ${NC}"
+        echo -e "${CYAN}请选择操作 [0-14]: ${NC}"
         read -r choice
         
         case "$choice" in
@@ -4277,12 +4542,15 @@ main_menu() {
             13)
                 show_help
                 ;;
+            14)
+                setup_quick_start menu
+                ;;
             0)
                 info "感谢使用，再见！"
                 exit 0
                 ;;
             *)
-                error "无效选择，请输入 0-13 之间的数字"
+                error "无效选择，请输入 0-14 之间的数字"
                 ;;
         esac
         
@@ -4326,6 +4594,7 @@ show_help() {
     echo "  • 证书管理: 查看证书列表、信息和状态"
     echo "  • 证书卸载: 安全移除不需要的证书"
     echo "  • 配置管理: 显示和修改当前配置"
+    echo "  • 快捷启动: 在主菜单中配置 'ssl' 快捷命令"
     echo
     echo -e "${CYAN}支持的验证方式:${NC}"
     echo "  • DNS 验证: 支持通配符证书，需要配置DNS提供商"
