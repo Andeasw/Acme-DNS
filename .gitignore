@@ -1,0 +1,12 @@
+# Log files
+*.log
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment files
+.env
