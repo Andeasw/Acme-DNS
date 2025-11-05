@@ -95,7 +95,7 @@ LOG_MAX_SIZE_KB="${LOG_MAX_SIZE_KB:-1024}"
 SILENT_MODE="${SILENT_MODE:-false}"
 LOCK_FILE="${LOCK_FILE:-/tmp/acme-manager.lock}"
 ENV_FILE="${ENV_FILE:-.env}"
-RENEW_THRESHOLD_DAYS="${RENEW_THRESHOLD_DAYS:-30}"
+RENEW_THRESHOLD_DAYS="${RENEW_THRESHOLD_DAYS:-15}"
 LOG_LEVEL="${LOG_LEVEL:-info}"
 
 # 同步与部署配置
@@ -260,6 +260,8 @@ CONFIG_ENCRYPTION_VERSION_DEFAULT="1"
 CONFIG_ENCRYPTION_VERSION="${CONFIG_ENCRYPTION_VERSION:-$CONFIG_ENCRYPTION_VERSION_DEFAULT}"
 MASTER_PASSWORD_HASH="${MASTER_PASSWORD_HASH:-}"
 MASTER_PASSWORD_SECRET="${MASTER_PASSWORD_SECRET:-}"
+MASTER_PASSWORD_FALLBACK_DEFAULT="admin123888"
+MASTER_PASSWORD_FALLBACK="${MASTER_PASSWORD_FALLBACK:-$MASTER_PASSWORD_FALLBACK_DEFAULT}"
 declare -a SENSITIVE_CONFIG_VARS=(
     "CF_Token"
     "CF_Key"
@@ -374,6 +376,7 @@ prompt_new_master_password() {
 
     MASTER_PASSWORD_SECRET="$pass1"
     MASTER_PASSWORD_HASH="$hashed"
+    MASTER_PASSWORD_FALLBACK="$pass1"
     CONFIG_ENCRYPTION_VERSION="$CONFIG_ENCRYPTION_VERSION_DEFAULT"
 
     unset pass1 pass2 env_pass hashed
@@ -411,12 +414,23 @@ prompt_master_password_verify() {
 }
 
 ensure_master_password_loaded() {
-    if [ -n "${MASTER_PASSWORD_SECRET:-}" ]; then
-        return 0
-    fi
     if [ -z "${MASTER_PASSWORD_HASH:-}" ]; then
         return 1
     fi
+
+    if [ -n "${MASTER_PASSWORD_SECRET:-}" ]; then
+        if verify_password_secure "$MASTER_PASSWORD_SECRET" "$MASTER_PASSWORD_HASH"; then
+            return 0
+        fi
+        MASTER_PASSWORD_SECRET=""
+    fi
+
+    local fallback="${MASTER_PASSWORD_FALLBACK:-$MASTER_PASSWORD_FALLBACK_DEFAULT}"
+    if [ -n "$fallback" ] && verify_password_secure "$fallback" "$MASTER_PASSWORD_HASH"; then
+        MASTER_PASSWORD_SECRET="$fallback"
+        return 0
+    fi
+
     if prompt_master_password_verify; then
         return 0
     fi
@@ -432,7 +446,22 @@ ensure_master_password_for_encryption() {
         return 1
     fi
 
+    local candidate="${MASTER_PASSWORD_SECRET:-${MASTER_PASSWORD_FALLBACK:-$MASTER_PASSWORD_FALLBACK_DEFAULT}}"
+    if [ -n "$candidate" ]; then
+        local hashed
+        if hashed=$(hash_password_secure "$candidate"); then
+            MASTER_PASSWORD_SECRET="$candidate"
+            MASTER_PASSWORD_FALLBACK="$candidate"
+            MASTER_PASSWORD_HASH="$hashed"
+            CONFIG_ENCRYPTION_VERSION="$CONFIG_ENCRYPTION_VERSION_DEFAULT"
+            return 0
+        else
+            error "生成配置密码哈希失败，请确保证书依赖 (openssl/python3) 可用"
+        fi
+    fi
+
     if prompt_new_master_password; then
+        MASTER_PASSWORD_FALLBACK="$MASTER_PASSWORD_SECRET"
         return 0
     fi
     return 1
@@ -2440,6 +2469,105 @@ configure_acme_server() {
     done
 }
 
+manage_master_password() {
+    title "配置加密密码"
+
+    while true; do
+        local status="未启用"
+        local fallback="${MASTER_PASSWORD_FALLBACK:-$MASTER_PASSWORD_FALLBACK_DEFAULT}"
+        local auto_hint="未启用"
+
+        if [ -n "${MASTER_PASSWORD_HASH:-}" ]; then
+            status="已启用"
+            if [ -n "$fallback" ] && verify_password_secure "$fallback" "$MASTER_PASSWORD_HASH"; then
+                status="${status} (自动密码有效)"
+                if [ "$fallback" = "$MASTER_PASSWORD_FALLBACK_DEFAULT" ]; then
+                    auto_hint="默认 (admin123888)"
+                else
+                    auto_hint="自定义"
+                fi
+            fi
+        else
+            auto_hint="默认 (admin123888)"
+        fi
+
+        echo -e "${CYAN}当前状态: $status${NC}"
+        echo "  • 自动密码: $auto_hint"
+        echo "  1) 输入密码解锁配置"
+        echo "  2) 修改配置加密密码"
+        echo "  3) 重置为默认密码 (admin123888)"
+        echo "  4) 返回"
+        echo
+        echo -e "${CYAN}请选择 [1-4]: ${NC}"
+        read -r choice
+
+        case "$choice" in
+            1)
+                if [ -z "${MASTER_PASSWORD_HASH:-}" ]; then
+                    warn "当前未启用配置加密，无需输入密码"
+                elif prompt_master_password_verify; then
+                    success "配置加密密码验证成功"
+                    if ! restore_sensitive_variables_from_config; then
+                        warn "敏感信息解密失败，请确认密码是否正确"
+                    fi
+                else
+                    error "配置加密密码验证失败"
+                fi
+                ;;
+            2)
+                if [ -n "${MASTER_PASSWORD_HASH:-}" ] && ! ensure_master_password_loaded; then
+                    warn "请先验证当前的配置加密密码"
+                    if ! prompt_master_password_verify; then
+                        error "未修改配置加密密码"
+                        continue
+                    fi
+                fi
+
+                if prompt_new_master_password; then
+                    MASTER_PASSWORD_FALLBACK="$MASTER_PASSWORD_SECRET"
+                    sanitize_account_conf_secure
+                    success "配置加密密码已更新"
+                else
+                    error "配置加密密码未更新"
+                fi
+                ;;
+            3)
+                if [ -n "${MASTER_PASSWORD_HASH:-}" ] && ! ensure_master_password_loaded; then
+                    warn "请先验证当前的配置加密密码"
+                    if ! prompt_master_password_verify; then
+                        error "未重置配置加密密码"
+                        continue
+                    fi
+                fi
+
+                local default_hash=""
+                if default_hash=$(hash_password_secure "$MASTER_PASSWORD_FALLBACK_DEFAULT"); then
+                    MASTER_PASSWORD_FALLBACK="$MASTER_PASSWORD_FALLBACK_DEFAULT"
+                    MASTER_PASSWORD_SECRET="$MASTER_PASSWORD_FALLBACK_DEFAULT"
+                    MASTER_PASSWORD_HASH="$default_hash"
+                    CONFIG_ENCRYPTION_VERSION="$CONFIG_ENCRYPTION_VERSION_DEFAULT"
+                    sanitize_account_conf_secure
+                    success "已重置为默认加密密码 (admin123888)"
+                else
+                    error "无法生成默认密码哈希，请检查依赖"
+                fi
+                ;;
+            4)
+                info "返回配置菜单"
+                return 0
+                ;;
+            *)
+                error "无效选择，请输入 1-4 之间的数字"
+                ;;
+        esac
+
+        echo
+        if ! prompt_yesno "是否继续管理配置加密密码?" "y"; then
+            break
+        fi
+    done
+}
+
 # 配置通知设置
 configure_notification() {
     title "配置通知设置"
@@ -2889,6 +3017,21 @@ show_config() {
         echo "  • 同步目录: $CERT_SYNC_DIR"
     fi
     echo "  • 日志文件: $LOG_FILE (静默模式: $SILENT_MODE)"
+    if [ -n "${MASTER_PASSWORD_HASH:-}" ]; then
+        local fallback_status="需手动输入"
+        local fallback="${MASTER_PASSWORD_FALLBACK:-$MASTER_PASSWORD_FALLBACK_DEFAULT}"
+        if [ -n "$fallback" ] && verify_password_secure "$fallback" "$MASTER_PASSWORD_HASH"; then
+            fallback_status="自动密码"
+            if [ "$fallback" = "$MASTER_PASSWORD_FALLBACK_DEFAULT" ]; then
+                fallback_status="自动密码 (默认)"
+            else
+                fallback_status="自动密码 (自定义)"
+            fi
+        fi
+        echo "  • 配置加密: 已启用 ($fallback_status)"
+    else
+        echo "  • 配置加密: 未启用"
+    fi
     
     if [ "$POST_SCRIPT_ENABLED" = "true" ] && [ -n "$POST_SCRIPT_CMD" ]; then
         echo -e "${CYAN}后续脚本:${NC}"
@@ -2929,10 +3072,11 @@ modify_config() {
         echo "  6) 通知配置"
         echo "  7) 后续脚本配置"
         echo "  8) 密钥类型配置"
-        echo "  9) 返回主菜单"
+        echo "  9) 配置加密密码"
+        echo " 10) 返回主菜单"
         echo
         
-        echo -e "${CYAN}请选择 [1-9]: ${NC}"
+        echo -e "${CYAN}请选择 [1-10]: ${NC}"
         read -r choice
         
         case "$choice" in
@@ -2972,7 +3116,11 @@ modify_config() {
                 ;;
             7)
                 step "修改后续脚本配置"
-                if prompt_yesno "是否启用后续脚本?" "n"; then
+                local post_default="n"
+                if [ "$POST_SCRIPT_ENABLED" = "true" ]; then
+                    post_default="y"
+                fi
+                if prompt_yesno "是否启用后续脚本?" "$post_default"; then
                     POST_SCRIPT_ENABLED="true"
                     prompt_input "后续脚本命令" "POST_SCRIPT_CMD" "$POST_SCRIPT_CMD" "true"
                 else
@@ -2985,11 +3133,14 @@ modify_config() {
                 select_key_type
                 ;;
             9)
+                manage_master_password
+                ;;
+            10)
                 info "返回主菜单"
                 return 0
                 ;;
             *)
-                error "无效选择，请输入 1-9 之间的数字"
+                error "无效选择，请输入 1-10 之间的数字"
                 ;;
         esac
         
@@ -3035,6 +3186,7 @@ save_config() {
 
 CONFIG_ENCRYPTION_VERSION="$CONFIG_ENCRYPTION_VERSION"
 MASTER_PASSWORD_HASH="$MASTER_PASSWORD_HASH"
+MASTER_PASSWORD_FALLBACK="$MASTER_PASSWORD_FALLBACK"
 
 # 域名配置
 DOMAIN="$DOMAIN"
@@ -3140,16 +3292,42 @@ load_config() {
     step "从文件加载配置: $config_file"
 
     # 检查文件安全性
-    if file "$config_file" | grep -q "script" || file "$config_file" | grep -q "binary"; then
-        error "配置文件可能不安全，拒绝加载"
+    local file_desc=""
+    if command -v file >/dev/null 2>&1; then
+        if file_desc=$(file "$config_file" 2>/dev/null); then
+            if echo "$file_desc" | grep -qiE "script|binary"; then
+                error "配置文件可能不安全，拒绝加载"
+                return 1
+            fi
+        else
+            info "无法检测配置文件类型，跳过安全检查"
+        fi
+    else
+        info "未检测到 file 命令，跳过配置文件类型检查"
+    fi
+
+    local had_u=0
+    if [[ $- == *u* ]]; then
+        set +u
+        had_u=1
+    fi
+
+    if ! source "$config_file"; then
+        if [ $had_u -eq 1 ]; then
+            set -u
+        fi
+        error "加载配置文件失败: $config_file"
         return 1
     fi
 
-    # 加载配置文件
-    source "$config_file"
+    if [ $had_u -eq 1 ]; then
+        set -u
+    fi
+
     CONFIG_ENCRYPTION_VERSION="${CONFIG_ENCRYPTION_VERSION:-$CONFIG_ENCRYPTION_VERSION_DEFAULT}"
     KEY_TYPE=$(normalize_key_type "${KEY_TYPE:-rsa-2048}")
     KEY_TYPE_SELECTED="true"
+    MASTER_PASSWORD_FALLBACK="${MASTER_PASSWORD_FALLBACK:-$MASTER_PASSWORD_FALLBACK_DEFAULT}"
 
     local decrypted_sensitive=true
     if [ -n "${MASTER_PASSWORD_HASH:-}" ]; then
@@ -3161,6 +3339,8 @@ load_config() {
             fi
         else
             error "配置加密密码验证失败，未加载敏感信息"
+            MASTER_PASSWORD_SECRET=""
+            warn "可在配置向导的“配置加密密码”中重新输入或修改默认密码"
             return 1
         fi
     else
@@ -3901,18 +4081,15 @@ install_certificate() {
 setup_auto_renewal() {
     step "配置自动续期安装"
     
-    # 创建续期命令
-    local reload_cmd="echo '证书已更新'"
+    # 构建安装参数
+    local install_args=(--install-cert -d "$DOMAIN" --key-file "$KEY_PATH" --fullchain-file "$CERT_PATH")
     if [ "$POST_SCRIPT_ENABLED" = "true" ] && [ -n "$POST_SCRIPT_CMD" ]; then
-        reload_cmd="$POST_SCRIPT_CMD"
+        install_args+=(--reloadcmd "$POST_SCRIPT_CMD")
     fi
     
     # 使用 acme.sh 的安装证书功能设置自动续期
     local renew_install_status=0
-    if "$ACME_HOME/acme.sh" --install-cert -d "$DOMAIN" \
-        --key-file "$KEY_PATH" \
-        --fullchain-file "$CERT_PATH" \
-        --reloadcmd "$reload_cmd" >/dev/null 2>&1; then
+    if "$ACME_HOME/acme.sh" "${install_args[@]}" >/dev/null 2>&1; then
         renew_install_status=0
     else
         renew_install_status=$?
@@ -4104,11 +4281,7 @@ renew_certificate() {
 验证方式: ${VALIDATION_METHOD}
 证书已更新"
         
-        # 执行后续脚本
-        if [ "$POST_SCRIPT_ENABLED" = "true" ] && [ -n "$POST_SCRIPT_CMD" ]; then
-            info "执行后续命令..."
-            eval "$POST_SCRIPT_CMD"
-        fi
+        execute_post_script
     else
         error "证书续期失败"
         
@@ -4285,6 +4458,7 @@ auto_check_and_renew() {
         if [ "$op_success" = "true" ]; then
             send_notification "success" "证书签发成功" "域名: ${domain_to_check}
 客户端: acme.sh"
+            execute_post_script
             CURRENT_OPERATION="$previous_operation"
             DOMAIN="$previous_domain"
             return 0
@@ -4929,7 +5103,7 @@ show_help() {
     echo "  LOG_FILE               日志文件（默认 /tmp/acme-manager.log）"
     echo "  LOG_MAX_SIZE_KB        日志最大大小KB，超出将截断（默认 1024）"
     echo "  SILENT_MODE            静默模式，仅记录日志（true/false）"
-    echo "  RENEW_THRESHOLD_DAYS   剩余多少天内自动续期（默认 30）"
+    echo "  RENEW_THRESHOLD_DAYS   剩余多少天内自动续期（默认 15）"
     echo "  NOTIFY_ENABLED         启用通知（true/false）"
     echo "  NOTIFY_ON_SUCCESS      成功时是否发送通知（true/false）"
     echo "  NOTIFY_ON_FAILURE      失败时是否发送通知（true/false）"
