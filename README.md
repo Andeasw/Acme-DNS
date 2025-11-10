@@ -74,7 +74,6 @@ DOMAIN="example.com" WILDCARD_DOMAIN="*.example.com" CF_Token="your_token" ./Acm
 * Dual ACME server support: Let's Encrypt, ZeroSSL
 * **Multi-key-type support**: RSA-2048 (default), RSA-4096, ECC-256, ECC-384, ECC-521
 * **Install & Auto-Renew**: Install certificates to custom paths with automatic renewal via cron or systemd
-* **Secure Credential Storage**: Sensitive credentials (passwords/tokens) are never stored in plaintext config files
 * **DNS Propagation Display**: Real-time countdown display during DNS record propagation wait (120 seconds)
 * **Quick Startup**: Optional quick access command - just type `ssl` to launch the script from anywhere
 * Interactive menu with color-coded output
