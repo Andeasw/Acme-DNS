@@ -256,12 +256,7 @@ debug() { log DEBUG "$@"; }
 # 快速启动配置
 QUICK_START_FLAG_FILE="$HOME/.acme-dns-quick-start"
 
-CONFIG_ENCRYPTION_VERSION_DEFAULT="1"
-CONFIG_ENCRYPTION_VERSION="${CONFIG_ENCRYPTION_VERSION:-$CONFIG_ENCRYPTION_VERSION_DEFAULT}"
-MASTER_PASSWORD_HASH="${MASTER_PASSWORD_HASH:-}"
-MASTER_PASSWORD_SECRET="${MASTER_PASSWORD_SECRET:-}"
-MASTER_PASSWORD_FALLBACK_DEFAULT="admin123888"
-MASTER_PASSWORD_FALLBACK="${MASTER_PASSWORD_FALLBACK:-$MASTER_PASSWORD_FALLBACK_DEFAULT}"
+# 敏感配置字段列表（用于配置文件写入与 account.conf 清理）
 declare -a SENSITIVE_CONFIG_VARS=(
     "CF_Token"
     "CF_Key"
@@ -277,264 +272,13 @@ declare -a SENSITIVE_CONFIG_VARS=(
     "WEBHOOK_URL"
 )
 
-hash_password_secure() {
-    local password="$1"
-    if [ -z "$password" ]; then
-        return 1
-    fi
-
-    local hashed=""
-    if ! hashed=$(PASS="$password" python3 - <<'PY' 2>/dev/null
-import crypt
-import os
-import sys
-
-password = os.environ.get("PASS", "")
-if not password:
-    sys.exit(1)
-
-method = None
-if hasattr(crypt, "METHOD_ARGON2ID"):
-    method = crypt.METHOD_ARGON2ID
-elif hasattr(crypt, "METHOD_BLOWFISH"):
-    method = crypt.METHOD_BLOWFISH
-else:
-    sys.exit(2)
-
-print(crypt.crypt(password, crypt.mksalt(method)))
-PY
-    ); then
-        return 1
-    fi
-
-    printf '%s\n' "$hashed"
-}
-
-verify_password_secure() {
-    local password="$1"
-    local hashed="$2"
-    if [ -z "$password" ] || [ -z "$hashed" ]; then
-        return 1
-    fi
-
-    PASS="$password" HASH="$hashed" python3 - <<'PY' >/dev/null 2>&1
-import crypt
-import os
-import sys
-
-password = os.environ.get("PASS", "")
-hashed = os.environ.get("HASH", "")
-
-if not password or not hashed:
-    sys.exit(1)
-
-if crypt.crypt(password, hashed) == hashed:
-    sys.exit(0)
-sys.exit(1)
-PY
-}
-
-prompt_new_master_password() {
-    local env_pass="${MASTER_PASSWORD:-}"
-    local pass1=""
-    local pass2=""
-
-    if [ -n "$env_pass" ]; then
-        if [ ${#env_pass} -lt 8 ]; then
-            error "MASTER_PASSWORD 环境变量长度不足 8 位，无法作为配置加密密码"
-            return 1
-        fi
-        pass1="$env_pass"
-    else
-        while true; do
-            echo -ne "${CYAN}请设置配置加密密码(至少8位): ${NC}"
-            read -rs pass1
-            echo
-            if [ ${#pass1} -lt 8 ]; then
-                warn "密码长度不足 8 位，请重新输入"
-                pass1=""
-                continue
-            fi
-            echo -ne "${CYAN}请再次输入以确认: ${NC}"
-            read -rs pass2
-            echo
-            if [ "$pass1" != "$pass2" ]; then
-                warn "两次输入的密码不一致，请重新输入"
-                pass1=""
-                pass2=""
-                continue
-            fi
-            break
-        done
-    fi
-
-    local hashed
-    if ! hashed=$(hash_password_secure "$pass1"); then
-        error "生成配置密码哈希失败，请确保已安装 python3 并支持 bcrypt/argon2"
-        return 1
-    fi
-
-    MASTER_PASSWORD_SECRET="$pass1"
-    MASTER_PASSWORD_HASH="$hashed"
-    MASTER_PASSWORD_FALLBACK="$pass1"
-    CONFIG_ENCRYPTION_VERSION="$CONFIG_ENCRYPTION_VERSION_DEFAULT"
-
-    unset pass1 pass2 env_pass hashed
-    return 0
-}
-
-prompt_master_password_verify() {
-    local attempt=""
-    local tries=0
-    local max_tries=3
-
-    while [ $tries -lt $max_tries ]; do
-        if [ -n "${MASTER_PASSWORD:-}" ] && [ $tries -eq 0 ]; then
-            attempt="$MASTER_PASSWORD"
-        else
-            echo -ne "${CYAN}请输入配置加密密码: ${NC}"
-            read -rs attempt
-            echo
-        fi
-
-        if [ -z "$attempt" ]; then
-            warn "密码不能为空"
-        elif verify_password_secure "$attempt" "$MASTER_PASSWORD_HASH"; then
-            MASTER_PASSWORD_SECRET="$attempt"
-            return 0
-        else
-            warn "配置加密密码验证失败"
-        fi
-
-        attempt=""
-        tries=$((tries + 1))
-    done
-
-    return 1
-}
-
-ensure_master_password_loaded() {
-    if [ -z "${MASTER_PASSWORD_HASH:-}" ]; then
-        return 1
-    fi
-
-    if [ -n "${MASTER_PASSWORD_SECRET:-}" ]; then
-        if verify_password_secure "$MASTER_PASSWORD_SECRET" "$MASTER_PASSWORD_HASH"; then
-            return 0
-        fi
-        MASTER_PASSWORD_SECRET=""
-    fi
-
-    local fallback="${MASTER_PASSWORD_FALLBACK:-$MASTER_PASSWORD_FALLBACK_DEFAULT}"
-    if [ -n "$fallback" ] && verify_password_secure "$fallback" "$MASTER_PASSWORD_HASH"; then
-        MASTER_PASSWORD_SECRET="$fallback"
-        return 0
-    fi
-
-    if prompt_master_password_verify; then
-        return 0
-    fi
-    return 1
-}
-
-ensure_master_password_for_encryption() {
-    if [ -n "${MASTER_PASSWORD_HASH:-}" ]; then
-        if ensure_master_password_loaded; then
-            return 0
-        fi
-        error "配置加密密码验证失败，无法继续保存配置"
-        return 1
-    fi
-
-    local candidate="${MASTER_PASSWORD_SECRET:-${MASTER_PASSWORD_FALLBACK:-$MASTER_PASSWORD_FALLBACK_DEFAULT}}"
-    if [ -n "$candidate" ]; then
-        local hashed
-        if hashed=$(hash_password_secure "$candidate"); then
-            MASTER_PASSWORD_SECRET="$candidate"
-            MASTER_PASSWORD_FALLBACK="$candidate"
-            MASTER_PASSWORD_HASH="$hashed"
-            CONFIG_ENCRYPTION_VERSION="$CONFIG_ENCRYPTION_VERSION_DEFAULT"
-            return 0
-        else
-            error "生成配置密码哈希失败，请确保证书依赖 (openssl/python3) 可用"
-        fi
-    fi
-
-    if prompt_new_master_password; then
-        MASTER_PASSWORD_FALLBACK="$MASTER_PASSWORD_SECRET"
-        return 0
-    fi
-    return 1
-}
-
-encrypt_sensitive_value() {
-    local plaintext="$1"
-    local password="$2"
-
-    if [ -z "$plaintext" ]; then
-        printf '%s' ""
-        return 0
-    fi
-    if [ -z "$password" ]; then
-        return 1
-    fi
-
-    local ciphertext=""
-    if ! ciphertext=$(printf '%s' "$plaintext" | openssl enc -aes-256-cbc -pbkdf2 -salt -base64 -pass pass:"$password" 2>/dev/null | tr -d '\n'); then
-        return 1
-    fi
-    printf '%s\n' "$ciphertext"
-}
-
-decrypt_sensitive_value() {
-    local ciphertext="$1"
-    local password="$2"
-
-    if [ -z "$ciphertext" ]; then
-        printf '%s' ""
-        return 0
-    fi
-    if [ -z "$password" ]; then
-        return 1
-    fi
-
-    local plaintext=""
-    if ! plaintext=$(printf '%s' "$ciphertext" | openssl enc -aes-256-cbc -pbkdf2 -salt -base64 -d -pass pass:"$password" 2>/dev/null); then
-        return 1
-    fi
-    printf '%s\n' "$plaintext"
-}
-
-restore_sensitive_variables_from_config() {
-    if [ -z "${MASTER_PASSWORD_SECRET:-}" ]; then
-        return 1
-    fi
-
-    local var=""
-    for var in "${SENSITIVE_CONFIG_VARS[@]}"; do
-        local enc_var="${var}_ENC"
-        local enc_value="${!enc_var:-}"
-        if [ -n "$enc_value" ]; then
-            local decrypted=""
-            if decrypted=$(decrypt_sensitive_value "$enc_value" "$MASTER_PASSWORD_SECRET"); then
-                eval "$var=\"\$decrypted\""
-            else
-                warn "无法解密配置中的 $var，已跳过"
-            fi
-        fi
-    done
-
-    return 0
-}
-
 sanitize_account_conf_secure() {
     local account_conf="$ACME_HOME/account.conf"
+
     mkdir -p "$ACME_HOME" 2>/dev/null || true
     if [ ! -f "$account_conf" ]; then
         touch "$account_conf" 2>/dev/null || true
     fi
-
-    ensure_master_password_loaded || true
 
     local tmp_file="${account_conf}.secure"
     : > "$tmp_file"
@@ -554,20 +298,13 @@ sanitize_account_conf_secure() {
         fi
     done < "$account_conf"
 
-    if [ -n "${MASTER_PASSWORD_SECRET:-}" ]; then
-        local sensitive_var=""
-        for sensitive_var in "${SENSITIVE_CONFIG_VARS[@]}"; do
-            local value="${!sensitive_var:-}"
-            if [ -n "$value" ]; then
-                local enc_value=""
-                if enc_value=$(encrypt_sensitive_value "$value" "$MASTER_PASSWORD_SECRET"); then
-                    printf '%s_ENC="%s"\n' "$sensitive_var" "$enc_value" >> "$tmp_file"
-                else
-                    warn "无法将 $sensitive_var 写入加密存储"
-                fi
-            fi
-        done
-    fi
+    local sensitive_var=""
+    for sensitive_var in "${SENSITIVE_CONFIG_VARS[@]}"; do
+        local value="${!sensitive_var:-}"
+        if [ -n "$value" ]; then
+            printf '%s=%q\n' "$sensitive_var" "$value" >> "$tmp_file"
+        fi
+    done
 
     mv "$tmp_file" "$account_conf" 2>/dev/null || cp "$tmp_file" "$account_conf"
     chmod 600 "$account_conf" 2>/dev/null || true
@@ -2469,105 +2206,6 @@ configure_acme_server() {
     done
 }
 
-manage_master_password() {
-    title "配置加密密码"
-
-    while true; do
-        local status="未启用"
-        local fallback="${MASTER_PASSWORD_FALLBACK:-$MASTER_PASSWORD_FALLBACK_DEFAULT}"
-        local auto_hint="未启用"
-
-        if [ -n "${MASTER_PASSWORD_HASH:-}" ]; then
-            status="已启用"
-            if [ -n "$fallback" ] && verify_password_secure "$fallback" "$MASTER_PASSWORD_HASH"; then
-                status="${status} (自动密码有效)"
-                if [ "$fallback" = "$MASTER_PASSWORD_FALLBACK_DEFAULT" ]; then
-                    auto_hint="默认 (admin123888)"
-                else
-                    auto_hint="自定义"
-                fi
-            fi
-        else
-            auto_hint="默认 (admin123888)"
-        fi
-
-        echo -e "${CYAN}当前状态: $status${NC}"
-        echo "  • 自动密码: $auto_hint"
-        echo "  1) 输入密码解锁配置"
-        echo "  2) 修改配置加密密码"
-        echo "  3) 重置为默认密码 (admin123888)"
-        echo "  4) 返回"
-        echo
-        echo -e "${CYAN}请选择 [1-4]: ${NC}"
-        read -r choice
-
-        case "$choice" in
-            1)
-                if [ -z "${MASTER_PASSWORD_HASH:-}" ]; then
-                    warn "当前未启用配置加密，无需输入密码"
-                elif prompt_master_password_verify; then
-                    success "配置加密密码验证成功"
-                    if ! restore_sensitive_variables_from_config; then
-                        warn "敏感信息解密失败，请确认密码是否正确"
-                    fi
-                else
-                    error "配置加密密码验证失败"
-                fi
-                ;;
-            2)
-                if [ -n "${MASTER_PASSWORD_HASH:-}" ] && ! ensure_master_password_loaded; then
-                    warn "请先验证当前的配置加密密码"
-                    if ! prompt_master_password_verify; then
-                        error "未修改配置加密密码"
-                        continue
-                    fi
-                fi
-
-                if prompt_new_master_password; then
-                    MASTER_PASSWORD_FALLBACK="$MASTER_PASSWORD_SECRET"
-                    sanitize_account_conf_secure
-                    success "配置加密密码已更新"
-                else
-                    error "配置加密密码未更新"
-                fi
-                ;;
-            3)
-                if [ -n "${MASTER_PASSWORD_HASH:-}" ] && ! ensure_master_password_loaded; then
-                    warn "请先验证当前的配置加密密码"
-                    if ! prompt_master_password_verify; then
-                        error "未重置配置加密密码"
-                        continue
-                    fi
-                fi
-
-                local default_hash=""
-                if default_hash=$(hash_password_secure "$MASTER_PASSWORD_FALLBACK_DEFAULT"); then
-                    MASTER_PASSWORD_FALLBACK="$MASTER_PASSWORD_FALLBACK_DEFAULT"
-                    MASTER_PASSWORD_SECRET="$MASTER_PASSWORD_FALLBACK_DEFAULT"
-                    MASTER_PASSWORD_HASH="$default_hash"
-                    CONFIG_ENCRYPTION_VERSION="$CONFIG_ENCRYPTION_VERSION_DEFAULT"
-                    sanitize_account_conf_secure
-                    success "已重置为默认加密密码 (admin123888)"
-                else
-                    error "无法生成默认密码哈希，请检查依赖"
-                fi
-                ;;
-            4)
-                info "返回配置菜单"
-                return 0
-                ;;
-            *)
-                error "无效选择，请输入 1-4 之间的数字"
-                ;;
-        esac
-
-        echo
-        if ! prompt_yesno "是否继续管理配置加密密码?" "y"; then
-            break
-        fi
-    done
-}
-
 # 配置通知设置
 configure_notification() {
     title "配置通知设置"
@@ -3017,21 +2655,7 @@ show_config() {
         echo "  • 同步目录: $CERT_SYNC_DIR"
     fi
     echo "  • 日志文件: $LOG_FILE (静默模式: $SILENT_MODE)"
-    if [ -n "${MASTER_PASSWORD_HASH:-}" ]; then
-        local fallback_status="需手动输入"
-        local fallback="${MASTER_PASSWORD_FALLBACK:-$MASTER_PASSWORD_FALLBACK_DEFAULT}"
-        if [ -n "$fallback" ] && verify_password_secure "$fallback" "$MASTER_PASSWORD_HASH"; then
-            fallback_status="自动密码"
-            if [ "$fallback" = "$MASTER_PASSWORD_FALLBACK_DEFAULT" ]; then
-                fallback_status="自动密码 (默认)"
-            else
-                fallback_status="自动密码 (自定义)"
-            fi
-        fi
-        echo "  • 配置加密: 已启用 ($fallback_status)"
-    else
-        echo "  • 配置加密: 未启用"
-    fi
+    echo "  • 配置文件安全: 敏感凭据信息以明文保存，请确保配置文件仅对当前用户可读 (建议 chmod 600)"
     
     if [ "$POST_SCRIPT_ENABLED" = "true" ] && [ -n "$POST_SCRIPT_CMD" ]; then
         echo -e "${CYAN}后续脚本:${NC}"
@@ -3072,11 +2696,10 @@ modify_config() {
         echo "  6) 通知配置"
         echo "  7) 后续脚本配置"
         echo "  8) 密钥类型配置"
-        echo "  9) 配置加密密码"
-        echo " 10) 返回主菜单"
+        echo "  9) 返回主菜单"
         echo
         
-        echo -e "${CYAN}请选择 [1-10]: ${NC}"
+        echo -e "${CYAN}请选择 [1-9]: ${NC}"
         read -r choice
         
         case "$choice" in
@@ -3133,14 +2756,11 @@ modify_config() {
                 select_key_type
                 ;;
             9)
-                manage_master_password
-                ;;
-            10)
                 info "返回主菜单"
                 return 0
                 ;;
             *)
-                error "无效选择，请输入 1-10 之间的数字"
+                error "无效选择，请输入 1-9 之间的数字"
                 ;;
         esac
         
@@ -3157,36 +2777,16 @@ save_config() {
 
     step "保存配置到文件: $config_file"
 
-    if ! ensure_master_password_for_encryption; then
-        return 1
-    fi
+    local config_dir
+    config_dir=$(dirname "$config_file")
+    mkdir -p "$config_dir" 2>/dev/null || true
 
-    local master_password="$MASTER_PASSWORD_SECRET"
-    local sensitive_var=""
-    for sensitive_var in "${SENSITIVE_CONFIG_VARS[@]}"; do
-        local value="${!sensitive_var:-}"
-        local enc_value=""
-        if [ -n "$value" ] && [ -n "$master_password" ]; then
-            if ! enc_value=$(encrypt_sensitive_value "$value" "$master_password"); then
-                error "加密敏感信息 $sensitive_var 失败，配置未保存"
-                return 1
-            fi
-        fi
-        local enc_var="${sensitive_var}_ENC"
-        printf -v "$enc_var" '%s' "$enc_value"
-    done
-
-    info "敏感凭据已使用加密方式保存到配置文件"
-    info "~/.acme.sh/account.conf 中的敏感字段将同步加密处理"
+    info "敏感凭据将以明文写入配置文件，请确保文件权限安全 (建议 chmod 600)"
 
     cat > "$config_file" << EOF
 # SSL证书管理脚本配置文件
 # 生成时间: $(date)
-# 安全说明: 所有敏感信息均使用 AES-256-CBC + PBKDF2 加密保存，需配置密码才能解密
-
-CONFIG_ENCRYPTION_VERSION="$CONFIG_ENCRYPTION_VERSION"
-MASTER_PASSWORD_HASH="$MASTER_PASSWORD_HASH"
-MASTER_PASSWORD_FALLBACK="$MASTER_PASSWORD_FALLBACK"
+# 安全说明: 敏感凭据以明文保存，请确保此文件仅对当前用户可读 (建议 chmod 600)
 
 # 域名配置
 DOMAIN="$DOMAIN"
@@ -3204,17 +2804,27 @@ KEY_TYPE="$KEY_TYPE"
 
 # DNS提供商配置
 DNS_PROVIDER="$DNS_PROVIDER"
+CF_Token="$CF_Token"
+CF_Key="$CF_Key"
 CF_Zone_ID="$CF_Zone_ID"
 CF_Account_ID="$CF_Account_ID"
 CF_Email="$CF_Email"
+LUA_KEY="$LUA_KEY"
 LUA_EMAIL="$LUA_EMAIL"
 HE_USERNAME="$HE_USERNAME"
+HE_PASSWORD="$HE_PASSWORD"
 CLOUDNS_AUTH_ID="$CLOUDNS_AUTH_ID"
 CLOUDNS_SUB_AUTH_ID="$CLOUDNS_SUB_AUTH_ID"
+CLOUDNS_AUTH_PASSWORD="$CLOUDNS_AUTH_PASSWORD"
 PDNS_Url="$PDNS_Url"
 PDNS_ServerId="$PDNS_ServerId"
+PDNS_Token="$PDNS_Token"
 PDNS_Ttl="$PDNS_Ttl"
 One984HOSTING_Username="$One984HOSTING_Username"
+One984HOSTING_Password="$One984HOSTING_Password"
+DEDYN_TOKEN="$DEDYN_TOKEN"
+DYNV6_TOKEN="$DYNV6_TOKEN"
+DYNV6_KEY="$DYNV6_KEY"
 
 # 证书路径配置
 CERT_PATH="$CERT_PATH"
@@ -3256,26 +2866,14 @@ SERVICE_RELOAD_CMD="$SERVICE_RELOAD_CMD"
 NOTIFY_ENABLED="$NOTIFY_ENABLED"
 NOTIFY_ON_SUCCESS="$NOTIFY_ON_SUCCESS"
 NOTIFY_ON_FAILURE="$NOTIFY_ON_FAILURE"
+TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN"
 TELEGRAM_CHAT_ID="$TELEGRAM_CHAT_ID"
+WEBHOOK_URL="$WEBHOOK_URL"
 MAIL_TO="$MAIL_TO"
 MAIL_SUBJECT_PREFIX="$MAIL_SUBJECT_PREFIX"
-
-# 加密存储的敏感参数
-CF_Token_ENC="${CF_Token_ENC:-}"
-CF_Key_ENC="${CF_Key_ENC:-}"
-LUA_KEY_ENC="${LUA_KEY_ENC:-}"
-HE_PASSWORD_ENC="${HE_PASSWORD_ENC:-}"
-CLOUDNS_AUTH_PASSWORD_ENC="${CLOUDNS_AUTH_PASSWORD_ENC:-}"
-PDNS_Token_ENC="${PDNS_Token_ENC:-}"
-One984HOSTING_Password_ENC="${One984HOSTING_Password_ENC:-}"
-DEDYN_TOKEN_ENC="${DEDYN_TOKEN_ENC:-}"
-DYNV6_TOKEN_ENC="${DYNV6_TOKEN_ENC:-}"
-DYNV6_KEY_ENC="${DYNV6_KEY_ENC:-}"
-TELEGRAM_BOT_TOKEN_ENC="${TELEGRAM_BOT_TOKEN_ENC:-}"
-WEBHOOK_URL_ENC="${WEBHOOK_URL_ENC:-}"
 EOF
 
-    chmod 600 "$config_file"
+    chmod 600 "$config_file" 2>/dev/null || true
     sanitize_account_conf_secure
     success "配置已保存到: $config_file"
 }
@@ -3324,32 +2922,25 @@ load_config() {
         set -u
     fi
 
-    CONFIG_ENCRYPTION_VERSION="${CONFIG_ENCRYPTION_VERSION:-$CONFIG_ENCRYPTION_VERSION_DEFAULT}"
     KEY_TYPE=$(normalize_key_type "${KEY_TYPE:-rsa-2048}")
     KEY_TYPE_SELECTED="true"
-    MASTER_PASSWORD_FALLBACK="${MASTER_PASSWORD_FALLBACK:-$MASTER_PASSWORD_FALLBACK_DEFAULT}"
 
-    local decrypted_sensitive=true
-    if [ -n "${MASTER_PASSWORD_HASH:-}" ]; then
-        info "检测到配置加密，正在验证访问密码..."
-        if ensure_master_password_loaded; then
-            if ! restore_sensitive_variables_from_config; then
-                warn "部分敏感信息解密失败，请检查密码或配置文件"
-                decrypted_sensitive=false
-            fi
-        else
-            error "配置加密密码验证失败，未加载敏感信息"
-            MASTER_PASSWORD_SECRET=""
-            warn "可在配置向导的“配置加密密码”中重新输入或修改默认密码"
-            return 1
+    local legacy_detected=false
+    local sensitive_var=""
+    for sensitive_var in "${SENSITIVE_CONFIG_VARS[@]}"; do
+        local enc_var="${sensitive_var}_ENC"
+        if [ -n "${!enc_var:-}" ]; then
+            legacy_detected=true
+            warn "检测到已废弃的加密字段: ${enc_var}，请重新保存配置以更新凭据"
+            unset "$enc_var"
         fi
-    else
-        MASTER_PASSWORD_SECRET=""
+    done
+
+    if [ "$legacy_detected" = true ]; then
+        warn "旧版加密凭据不会自动加载，请在配置菜单中重新输入敏感信息后保存配置"
     fi
 
-    if [ "$decrypted_sensitive" = true ]; then
-        sanitize_account_conf_secure
-    fi
+    sanitize_account_conf_secure
 
     success "配置已从文件加载: $config_file"
     show_config
@@ -3618,8 +3209,6 @@ ensure_dns_creds() {
     step "配置 DNS 提供商: $DNS_PROVIDER"
     DNS_PROVIDER_READY="false"
 
-    ensure_master_password_loaded || true
-
     case "$DNS_PROVIDER" in
         cloudflare)
             if [ -n "$CF_Token" ]; then
@@ -3660,7 +3249,7 @@ ensure_dns_creds() {
             if [ -n "$One984HOSTING_Password" ]; then
                 export One984HOSTING_Password="$One984HOSTING_Password"
             fi
-            warn "1984Hosting 登录信息仅在本次运行中使用，敏感凭据已加密保存"
+            warn "1984Hosting 登录信息仅在本次运行中使用，请确保配置文件与 account.conf 权限安全"
             ;;
         desec)
             export DEDYN_TOKEN="$DEDYN_TOKEN"
