@@ -1,12 +1,6 @@
 #!/bin/bash
-
-# ==============================================================
-# Script Name: Acme-DNS-Super
-# Description: Advanced Acme.sh Manager (Debian & Alpine Supported)
-# Version: 0.0.2 (Release)
-# ==============================================================
-
 set -u
+export LC_ALL=C.UTF-8
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -18,7 +12,6 @@ PLAIN='\033[0m'
 CONFIG_FILE="$HOME/.acme_super_config"
 ACME_DIR="$HOME/.acme.sh"
 ACME_SH="$ACME_DIR/acme.sh"
-
 CURRENT_SCRIPT_PATH=""
 IS_ONLINE_RUN=false
 
@@ -57,7 +50,6 @@ load_config() {
     USER_EMAIL=""
     LANG_SET=""
     SHORTCUT_NAME=""
-
     if [ -f "$CONFIG_FILE" ]; then
         source "$CONFIG_FILE"
     fi
@@ -75,12 +67,11 @@ EOF
 
 load_language_strings() {
     if [ "${LANG_SET:-}" == "en" ]; then
-        TXT_TITLE="Acme-DNS-Super V0.0.2 | Cert Manager"
+        TXT_TITLE="Acme-DNS-Super | Cert Manager"
         TXT_STATUS_LABEL="Status"
         TXT_EMAIL_LABEL="Email"
         TXT_NOT_SET="Not Set"
         TXT_HINT_INSTALL=">> Warning: acme.sh is NOT installed. Please run [1] first. <<"
-        
         TXT_M_1="Init Environment (Install, Register & Shortcut)"
         TXT_M_2="Settings (Language / CA / Key / Shortcut)"
         TXT_M_3="Issue Cert - HTTP Mode (Single Domain)"
@@ -89,7 +80,6 @@ load_language_strings() {
         TXT_M_6="Cert Maintenance (List / Renew / Revoke)"
         TXT_M_7="Uninstall Script"
         TXT_M_0="Exit"
-        
         TXT_M6_TITLE="Certificate Management"
         TXT_M6_RENEW="Force Renew"
         TXT_M6_REVOKE="Revoke & Delete"
@@ -98,13 +88,11 @@ load_language_strings() {
         TXT_M6_CONFIRM_DEL="Are you sure? (y/n): "
         TXT_M6_DELETED="Certificate revoked and deleted."
         TXT_M6_EMPTY="No certificates found."
-        
         TXT_SC_CREATE="Creating shortcut..."
         TXT_SC_ASK="Enter shortcut name (Default: ssl): "
         TXT_SC_SUCCESS="Shortcut created! Run: "
         TXT_SC_FAIL_ONLINE="Error: Script is running via pipe/curl."
         TXT_SC_FAIL_HINT="Please 'wget' the script to disk to enable shortcuts."
-        
         TXT_SELECT="Please select [0-7]: "
         TXT_INVALID="Invalid selection."
         TXT_PRESS_ENTER="Press Enter to continue..."
@@ -118,7 +106,6 @@ load_language_strings() {
         TXT_ACC_SYNC="Syncing Accounts..."
         TXT_INIT_SUCCESS="Initialization Completed!"
         TXT_WARN_NO_INIT="Please initialize environment first (Menu 1)!"
-        
         TXT_INPUT_DOMAIN="Enter Domain: "
         TXT_DOMAIN_EMPTY="Domain cannot be empty."
         TXT_HTTP_MODE_SEL="Select Validation Mode:"
@@ -132,17 +119,14 @@ load_language_strings() {
         TXT_ISSUE_START="Starting Issue Process..."
         TXT_ISSUE_SUCCESS="Success!"
         TXT_ISSUE_FAIL="Failed. Check logs."
-        
         TXT_DNS_SEL="Select DNS Provider:"
         TXT_DNS_MANUAL="Manual Input (ENV)"
-        
         TXT_INS_DOMAIN="Enter Issued Domain: "
         TXT_INS_CERT_PATH="Cert Path: "
         TXT_INS_KEY_PATH="Key Path: "
         TXT_INS_CA_PATH="CA Path: "
         TXT_INS_RELOAD="Reload Command: "
         TXT_INS_SUCCESS="Install Success!"
-        
         TXT_SET_TITLE="System Settings"
         TXT_SET_1="Change Email"
         TXT_SET_2="Change Language"
@@ -151,20 +135,17 @@ load_language_strings() {
         TXT_SET_5="Upgrade acme.sh"
         TXT_SET_6="Update Shortcut"
         TXT_SET_UPDATED="Settings Updated."
-        
         TXT_UN_TITLE="Uninstall"
         TXT_UN_1="Remove Script Config"
         TXT_UN_2="Full Uninstall (acme.sh + Certs)"
         TXT_UN_CONFIRM="Type 'DELETE' to confirm: "
         TXT_UN_DONE="Uninstalled."
-
     else
-        TXT_TITLE="Acme-DNS-Super V0.0.2 | 证书管理大师"
+        TXT_TITLE="Acme-DNS-Super | 证书管理大师"
         TXT_STATUS_LABEL="当前状态"
         TXT_EMAIL_LABEL="注册邮箱"
         TXT_NOT_SET="未设置"
         TXT_HINT_INSTALL=">> 警告：检测到未安装 acme.sh，请优先执行选项 [1] <<"
-        
         TXT_M_1="环境初始化 (安装、注册账户、配置快捷指令)"
         TXT_M_2="系统设置 (语言 / 邮箱 / CA / 密钥 / 快捷键)"
         TXT_M_3="签发证书 - HTTP 模式 (单域名)"
@@ -173,7 +154,6 @@ load_language_strings() {
         TXT_M_6="证书维护 (查看列表 / 续期 / 吊销)"
         TXT_M_7="卸载脚本"
         TXT_M_0="退出"
-        
         TXT_M6_TITLE="证书管理列表"
         TXT_M6_RENEW="强制续期 (Force Renew)"
         TXT_M6_REVOKE="吊销并删除"
@@ -182,13 +162,11 @@ load_language_strings() {
         TXT_M6_CONFIRM_DEL="确认执行 [吊销+删除] 吗? (y/n): "
         TXT_M6_DELETED="证书已吊销并删除。"
         TXT_M6_EMPTY="未找到任何证书。"
-        
         TXT_SC_CREATE="正在配置快捷启动..."
         TXT_SC_ASK="请输入快捷命令名称 (默认: ssl): "
         TXT_SC_SUCCESS="快捷方式已创建！运行命令："
         TXT_SC_FAIL_ONLINE="错误：脚本正在在线运行 (Pipe/Curl)。"
         TXT_SC_FAIL_HINT="无法创建快捷方式。请使用 wget 下载脚本到本地后再运行。"
-
         TXT_SELECT="请输入选项 [0-7]: "
         TXT_INVALID="无效的选择。"
         TXT_PRESS_ENTER="按回车键继续..."
@@ -202,7 +180,6 @@ load_language_strings() {
         TXT_ACC_SYNC="正在同步账户..."
         TXT_INIT_SUCCESS="环境初始化完成！"
         TXT_WARN_NO_INIT="请先执行环境初始化 (选项 1)！"
-        
         TXT_INPUT_DOMAIN="请输入域名: "
         TXT_DOMAIN_EMPTY="域名不能为空。"
         TXT_HTTP_MODE_SEL="选择验证模式:"
@@ -216,17 +193,14 @@ load_language_strings() {
         TXT_ISSUE_START="开始执行签发流程..."
         TXT_ISSUE_SUCCESS="证书签发成功！"
         TXT_ISSUE_FAIL="签发失败，请检查日志。"
-        
         TXT_DNS_SEL="选择 DNS 服务商:"
         TXT_DNS_MANUAL="手动输入环境变量 (通用模式)"
-        
         TXT_INS_DOMAIN="请输入已签发的域名: "
         TXT_INS_CERT_PATH="Cert 路径 (如 /etc/nginx/ssl/cert.pem): "
         TXT_INS_KEY_PATH="Key  路径 (如 /etc/nginx/ssl/key.pem): "
         TXT_INS_CA_PATH="CA   路径 (如 /etc/nginx/ssl/full.pem): "
         TXT_INS_RELOAD="重载命令 (如 systemctl reload nginx): "
         TXT_INS_SUCCESS="部署成功！"
-        
         TXT_SET_TITLE="系统设置"
         TXT_SET_1="修改注册邮箱"
         TXT_SET_2="切换语言 (Change Language)"
@@ -235,10 +209,9 @@ load_language_strings() {
         TXT_SET_5="更新 acme.sh"
         TXT_SET_6="修复快捷启动"
         TXT_SET_UPDATED="设置已更新。"
-        
         TXT_UN_TITLE="卸载选项"
         TXT_UN_1="删除脚本配置"
-        TXT_UN_2="彻底卸载 (移除 acme.sh + 证书)"
+        TXT_UN_2="彻底卸载 (移除 acme.sh + Certs)"
         TXT_UN_CONFIRM="输入 'DELETE' 确认彻底卸载: "
         TXT_UN_DONE="已卸载。"
     fi
@@ -266,18 +239,15 @@ select_language_first() {
 
 setup_shortcut() {
     echo -e "${YELLOW}${TXT_SC_CREATE}${PLAIN}"
-    
     if [ "$IS_ONLINE_RUN" = true ] || [ ! -f "$CURRENT_SCRIPT_PATH" ]; then
         echo -e "${RED}${TXT_SC_FAIL_ONLINE}${PLAIN}"
         echo -e "${YELLOW}${TXT_SC_FAIL_HINT}${PLAIN}"
         read -p "${TXT_PRESS_ENTER}"
         return
     fi
-
     if [ -n "$SHORTCUT_NAME" ] && [ -f "/usr/bin/$SHORTCUT_NAME" ]; then
         rm -f "/usr/bin/$SHORTCUT_NAME"
     fi
-
     read -p "${TXT_SC_ASK}" input_name
     if [ -z "$input_name" ]; then
         SHORTCUT_NAME="ssl"
@@ -288,14 +258,12 @@ setup_shortcut() {
         fi
         SHORTCUT_NAME="$input_name"
     fi
-
     cat > "/usr/bin/$SHORTCUT_NAME" <<EOF
 #!/bin/bash
 bash "$CURRENT_SCRIPT_PATH"
 EOF
     chmod +x "/usr/bin/$SHORTCUT_NAME"
     save_config
-    
     echo -e "${GREEN}${TXT_SC_SUCCESS}${CYAN}$SHORTCUT_NAME${PLAIN}"
 }
 
@@ -303,7 +271,6 @@ check_dependencies() {
     echo -e "${CYAN}${TXT_CHECK_DEP}${PLAIN}"
     local install_cmd=""
     local update_cmd=""
-
     if [[ -n $(command -v apt-get) ]]; then
         install_cmd="apt-get -y -q install"
         update_cmd="apt-get -q update"
@@ -317,14 +284,11 @@ check_dependencies() {
         echo -e "${RED}Error: Unknown Package Manager.${PLAIN}"
         return 1
     fi
-
     local dependencies=(curl wget socat tar openssl)
     if ! command -v crontab &> /dev/null; then
         dependencies+=(cron)
     fi
-
     local missing_dep=false
-
     for dep in "${dependencies[@]}"; do
         if ! command -v $dep &> /dev/null; then
             if [[ "$dep" == "cron" && -n $(command -v apk) ]]; then
@@ -334,7 +298,6 @@ check_dependencies() {
             fi
         fi
     done
-
     if [ "$missing_dep" = true ]; then
         echo -e "${YELLOW}${TXT_MISSING_DEP}${PLAIN}"
         $update_cmd
@@ -342,7 +305,6 @@ check_dependencies() {
              $install_cmd $dep
         done
     fi
-    
     if [[ -n $(command -v systemctl) ]]; then
         if ! systemctl is-active --quiet cron && ! systemctl is-active --quiet crond; then
              systemctl start cron 2>/dev/null || systemctl start crond 2>/dev/null
@@ -365,13 +327,11 @@ install_acme_sh() {
         echo -e "${GREEN}${TXT_ACME_EXIST}${PLAIN}"
     else
         echo -e "${CYAN}${TXT_ACME_INSTALLING}${PLAIN}"
-        
         while true; do
             if [ -z "${USER_EMAIL:-}" ]; then
                 read -p "${TXT_INPUT_EMAIL}" input_email
                 USER_EMAIL="$input_email"
             fi
-            
             if [[ "$USER_EMAIL" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
                 save_config
                 break
@@ -380,9 +340,7 @@ install_acme_sh() {
                 USER_EMAIL=""
             fi
         done
-        
         curl https://get.acme.sh | sh -s email="$USER_EMAIL"
-        
         if [ $? -ne 0 ]; then
             echo -e "${RED}Curl failed, trying git...${PLAIN}"
             if ! command -v git &> /dev/null; then
@@ -395,35 +353,29 @@ install_acme_sh() {
             cd ..
         fi
     fi
-    
     load_config
     register_accounts_logic "$USER_EMAIL"
     "$ACME_SH" --set-default-ca --server "$CA_SERVER"
     "$ACME_SH" --upgrade --auto-upgrade
     save_config
-    
     if [ -z "$SHORTCUT_NAME" ] && [ "$IS_ONLINE_RUN" = false ]; then
         setup_shortcut
     fi
-    
     echo -e "${GREEN}${TXT_INIT_SUCCESS}${PLAIN}"
 }
 
 issue_http() {
     if [ ! -f "$ACME_SH" ]; then echo -e "${RED}${TXT_WARN_NO_INIT}${PLAIN}"; return; fi
-    
     echo -e "${YELLOW}>>> HTTP Mode${PLAIN}"
     read -p "${TXT_INPUT_DOMAIN}" DOMAIN
     check_valid_domain "$DOMAIN" || return
-
     echo -e "${TXT_HTTP_MODE_SEL}"
     echo -e "${TXT_HTTP_STANDALONE}"
     echo -e "${TXT_HTTP_NGINX}"
     echo -e "${TXT_HTTP_APACHE}"
     echo -e "${TXT_HTTP_WEBROOT}"
     read -p "${TXT_SELECT}" MODE
-
-    local cmd_flags=""
+    local mode_arg=""
     case $MODE in
         1) 
             if command -v netstat &>/dev/null; then
@@ -433,22 +385,25 @@ issue_http() {
                     [[ "$cont" != "y" ]] && return
                 fi
             fi
-            cmd_flags="--standalone" 
+            mode_arg="--standalone" 
             ;;
-        2) cmd_flags="--nginx" ;;
-        3) cmd_flags="--apache" ;;
+        2) mode_arg="--nginx" ;;
+        3) mode_arg="--apache" ;;
         4) 
             read -p "${TXT_INPUT_WEBROOT}" webroot
             check_path_safety "$webroot" || return
             [ ! -d "$webroot" ] && echo -e "${RED}Path not found.${PLAIN}" && return
-            cmd_flags="--webroot $webroot"
+            mode_arg="--webroot"
             ;;
         *) echo -e "${RED}${TXT_INVALID}${PLAIN}"; return ;;
     esac
-
     echo -e "${CYAN}${TXT_ISSUE_START}${PLAIN}"
-    "$ACME_SH" --issue -d "$DOMAIN" $cmd_flags --keylength "$KEY_LENGTH" --server "$CA_SERVER"
-    
+    local cmd_args=("$ACME_SH" --issue -d "$DOMAIN" "$mode_arg")
+    if [ "$mode_arg" == "--webroot" ]; then
+        cmd_args+=("$webroot")
+    fi
+    cmd_args+=(--keylength "$KEY_LENGTH" --server "$CA_SERVER")
+    "${cmd_args[@]}"
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}${TXT_ISSUE_SUCCESS}${PLAIN}"
         install_cert_menu "$DOMAIN"
@@ -459,11 +414,9 @@ issue_http() {
 
 issue_dns() {
     if [ ! -f "$ACME_SH" ]; then echo -e "${RED}${TXT_WARN_NO_INIT}${PLAIN}"; return; fi
-
     echo -e "${YELLOW}>>> DNS API Mode${PLAIN}"
     read -p "${TXT_INPUT_DOMAIN}" DOMAIN
     check_valid_domain "$DOMAIN" || return
-
     echo -e "${TXT_DNS_SEL}"
     echo -e "1. CloudFlare"
     echo -e "2. LuaDNS"
@@ -476,9 +429,7 @@ issue_dns() {
     echo -e "9. ${TXT_DNS_MANUAL}"
     echo -e "0. Back"
     read -p "${TXT_SELECT}" DNS_OPT
-
     unset CF_Key CF_Email LUA_Key LUA_Email HE_Username HE_Password CLOUDNS_AUTH_ID CLOUDNS_SUB_AUTH_ID CLOUDNS_AUTH_PASSWORD PDNS_Url PDNS_ServerId PDNS_Token PDNS_Ttl One984_Username One984_Password DEDYN_TOKEN DYNV6_TOKEN
-
     local dns_type=""
     case $DNS_OPT in
         1)
@@ -555,12 +506,9 @@ issue_dns() {
         0) return ;;
         *) echo -e "${RED}${TXT_INVALID}${PLAIN}"; return ;;
     esac
-    
     [ -z "$dns_type" ] && return
-
     echo -e "${CYAN}${TXT_ISSUE_START}${PLAIN}"
     "$ACME_SH" --issue --dns "$dns_type" -d "$DOMAIN" --keylength "$KEY_LENGTH" --server "$CA_SERVER"
-    
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}${TXT_ISSUE_SUCCESS}${PLAIN}"
         install_cert_menu "$DOMAIN"
@@ -571,41 +519,36 @@ issue_dns() {
 
 install_cert_menu() {
     if [ ! -f "$ACME_SH" ]; then echo -e "${RED}${TXT_WARN_NO_INIT}${PLAIN}"; return; fi
-
     local default_domain="${1:-}"
     echo -e "${YELLOW}>>> Install Cert${PLAIN}"
-    
     if [ -z "$default_domain" ]; then
         read -p "${TXT_INS_DOMAIN}" DOMAIN
     else
         DOMAIN=$default_domain
     fi
     check_valid_domain "$DOMAIN" || return
-    
     if [ ! -d "$ACME_DIR/$DOMAIN" ] && [ ! -d "$ACME_DIR/${DOMAIN}_ecc" ]; then
         echo -e "${RED}Error: Cert not found for $DOMAIN${PLAIN}"
         return
     fi
-
     read -p "${TXT_INS_CERT_PATH}" CERT_PATH
     read -p "${TXT_INS_KEY_PATH}" KEY_PATH
     read -p "${TXT_INS_CA_PATH}" CA_PATH
     read -p "${TXT_INS_RELOAD}" RELOAD_CMD
-
     check_path_safety "$CERT_PATH" || return
     check_path_safety "$KEY_PATH" || return
     check_path_safety "$CA_PATH" || return
-
-    local cmd_build="$ACME_SH --install-cert -d $DOMAIN"
-    [[ "$KEY_LENGTH" == "ec"* ]] && cmd_build="$cmd_build --ecc"
-
-    [ -n "$CERT_PATH" ] && cmd_build="$cmd_build --cert-file $CERT_PATH"
-    [ -n "$KEY_PATH" ] && cmd_build="$cmd_build --key-file $KEY_PATH"
-    [ -n "$CA_PATH" ] && cmd_build="$cmd_build --fullchain-file $CA_PATH"
-    [ -n "$RELOAD_CMD" ] && cmd_build="$cmd_build --reloadcmd \"$RELOAD_CMD\""
-
-    eval "$cmd_build"
     
+    local cmd_args=("$ACME_SH" --install-cert -d "$DOMAIN")
+    if [[ "$KEY_LENGTH" == "ec"* ]]; then
+        cmd_args+=(--ecc)
+    fi
+    [ -n "$CERT_PATH" ] && cmd_args+=(--cert-file "$CERT_PATH")
+    [ -n "$KEY_PATH" ] && cmd_args+=(--key-file "$KEY_PATH")
+    [ -n "$CA_PATH" ] && cmd_args+=(--fullchain-file "$CA_PATH")
+    [ -n "$RELOAD_CMD" ] && cmd_args+=(--reloadcmd "$RELOAD_CMD")
+
+    "${cmd_args[@]}"
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}${TXT_INS_SUCCESS}${PLAIN}"
     else
@@ -624,7 +567,6 @@ settings_menu() {
         echo "6. ${TXT_SET_6}"
         echo "0. ${TXT_M_0}"
         read -p "${TXT_SELECT}" choice
-        
         case $choice in
             1)
                 read -p "${TXT_INPUT_EMAIL}" new_email
@@ -674,30 +616,18 @@ settings_menu() {
 
 manage_certs() {
     if [ ! -f "$ACME_SH" ]; then echo -e "${RED}${TXT_WARN_NO_INIT}${PLAIN}"; return; fi
-    
     while true; do
         echo -e "${CYAN}===== ${TXT_M6_TITLE} =====${PLAIN}"
-        
         raw_output=$("$ACME_SH" --list)
-        
         if [ "${LANG_SET:-}" == "cn" ]; then
              if [[ -z "$raw_output" ]]; then
                 echo -e "${YELLOW}${TXT_M6_EMPTY}${PLAIN}"
              else
-                echo "$raw_output" | sed \
-                    -e 's/Main_Domain/主域名/g' \
-                    -e 's/KeyLength/密钥长度/g' \
-                    -e 's/SAN_Domains/SAN域名/g' \
-                    -e 's/Profile/配置文件/g' \
-                    -e 's/CA /CA厂商 /g' \
-                    -e 's/Created/创建时间/g' \
-                    -e 's/Renew/续期时间/g' | \
-                    awk 'BEGIN {OFS="\t"} {print $0}'
+                echo "$raw_output" | sed -e 's/Main_Domain/主域名/g' -e 's/KeyLength/密钥长度/g' -e 's/SAN_Domains/SAN域名/g' -e 's/Profile/配置文件/g' -e 's/CA /CA厂商 /g' -e 's/Created/创建时间/g' -e 's/Renew/续期时间/g' | awk 'BEGIN {OFS="\t"} {print $0}'
              fi
         else
              echo "$raw_output"
         fi
-
         echo "------------------------"
         echo "1. ${TXT_M6_RENEW}"
         echo "2. ${TXT_M6_REVOKE}"
@@ -731,7 +661,6 @@ uninstall_menu() {
     echo "1. ${TXT_UN_1}"
     echo "2. ${TXT_UN_2}"
     read -p "${TXT_SELECT}" opt
-    
     if [ "$opt" == "1" ]; then
         rm -f "$CONFIG_FILE"
         [ -n "$SHORTCUT_NAME" ] && rm -f "/usr/bin/$SHORTCUT_NAME"
@@ -759,11 +688,9 @@ show_menu() {
     echo -e "${BLUE}==============================================================${PLAIN}"
     echo -e "${TXT_STATUS_LABEL}: CA: ${GREEN}${CA_SERVER:-Let's Encrypt}${PLAIN} | Key: ${GREEN}${KEY_LENGTH:-2048}${PLAIN} | ${TXT_EMAIL_LABEL}: ${GREEN}${USER_EMAIL:-${TXT_NOT_SET}}${PLAIN}"
     echo -e "${BLUE}--------------------------------------------------------------${PLAIN}"
-
     if [ ! -f "$ACME_SH" ]; then
         echo -e "${RED}${TXT_HINT_INSTALL}${PLAIN}"
     fi
-
     echo -e " 1. ${TXT_M_1}"
     echo -e " 2. ${TXT_M_2}"
     echo -e "--------------------------------------------------------------"
@@ -776,7 +703,6 @@ show_menu() {
     echo -e " 0. ${TXT_M_0}"
     echo -e "${BLUE}--------------------------------------------------------------${PLAIN}"
     read -p " ${TXT_SELECT}" num
-
     case $num in
         1) check_dependencies && install_acme_sh ;;
         2) settings_menu ;;
@@ -792,7 +718,6 @@ show_menu() {
 
 load_config
 select_language_first
-
 while true; do
     show_menu
     echo ""
