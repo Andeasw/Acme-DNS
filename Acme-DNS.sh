@@ -38,7 +38,7 @@ fi
 # ==============================================================
 
 check_valid_domain() {
-    local domain="$1"
+    local domain="${1:-}"
     # 允许字母、数字、点、连字符，禁止特殊字符防止注入
     if [[ ! "$domain" =~ ^[a-zA-Z0-9.-]+$ ]]; then
         echo -e "${RED}Error: Invalid domain format! Contains illegal characters.${PLAIN}"
@@ -48,7 +48,7 @@ check_valid_domain() {
 }
 
 check_path_safety() {
-    local path="$1"
+    local path="${1:-}"
     # 简单的路径检查，防止过分危险的输入
     if [[ "$path" == *"&"* ]] || [[ "$path" == *"|"* ]] || [[ "$path" == *";"* ]]; then
         echo -e "${RED}Error: Path contains illegal characters for security reasons.${PLAIN}"
@@ -305,7 +305,6 @@ select_language_first() {
 setup_shortcut() {
     echo -e "${YELLOW}${TXT_SC_CREATE}${PLAIN}"
     
-    # [优化逻辑] 检测是否为在线运行 (Curl模式下 $0 通常不是普通文件)
     if [ -z "$CURRENT_SCRIPT_PATH" ] || [ ! -f "$CURRENT_SCRIPT_PATH" ]; then
         echo -e "${RED}${TXT_SC_FAIL_ONLINE}${PLAIN}"
         echo -e "${YELLOW}${TXT_SC_FAIL_HINT}${PLAIN}"
@@ -314,7 +313,6 @@ setup_shortcut() {
         return
     fi
 
-    # 清理旧快捷方式
     if [ -n "$SHORTCUT_NAME" ] && [ -f "/usr/bin/$SHORTCUT_NAME" ]; then
         rm -f "/usr/bin/$SHORTCUT_NAME"
     fi
@@ -323,7 +321,6 @@ setup_shortcut() {
     if [ -z "$input_name" ]; then
         SHORTCUT_NAME="ssl"
     else
-        # 校验快捷键名称安全性
         if [[ ! "$input_name" =~ ^[a-zA-Z0-9_-]+$ ]]; then
              echo -e "${RED}Invalid name.${PLAIN}"
              return
@@ -331,7 +328,6 @@ setup_shortcut() {
         SHORTCUT_NAME="$input_name"
     fi
 
-    # 创建快捷方式
     cat > "/usr/bin/$SHORTCUT_NAME" <<EOF
 #!/bin/bash
 bash "$CURRENT_SCRIPT_PATH"
@@ -383,7 +379,6 @@ check_dependencies() {
         fi
     done
     
-    # 确保 cron 服务运行
     if [[ -n $(command -v systemctl) ]]; then
         if ! systemctl is-active --quiet cron && ! systemctl is-active --quiet crond; then
              systemctl start cron || systemctl start crond
@@ -392,7 +387,7 @@ check_dependencies() {
 }
 
 register_accounts_logic() {
-    local email=$1
+    local email="${1:-}"
     [ -z "$email" ] && return
     echo -e "${YELLOW}>>> ${TXT_ACC_SYNC}${PLAIN}"
     "$ACME_SH" --register-account -m "$email" --server letsencrypt --output-insecure >/dev/null 2>&1
@@ -438,7 +433,6 @@ install_acme_sh() {
     "$ACME_SH" --upgrade --auto-upgrade
     save_config
     
-    # 引导创建快捷方式
     if [ -z "$SHORTCUT_NAME" ]; then
         setup_shortcut
     fi
@@ -584,7 +578,6 @@ issue_dns() {
             while true; do
                 read -p "ENV > " env_in
                 [[ "$env_in" == "end" ]] && break
-                # 简单校验环境变量名
                 if [[ "$env_in" =~ ^[a-zA-Z0-9_]+=[a-zA-Z0-9_.-]+$ ]]; then
                     export "$env_in"
                 else
@@ -613,7 +606,7 @@ issue_dns() {
 install_cert_menu() {
     if [ ! -f "$ACME_SH" ]; then echo -e "${RED}${TXT_WARN_NO_INIT}${PLAIN}"; return; fi
 
-    local default_domain=$1
+    local default_domain="${1:-}"
     echo -e "${YELLOW}>>> Install Cert${PLAIN}"
     
     if [ -z "$default_domain" ]; then
@@ -723,21 +716,12 @@ manage_certs() {
     while true; do
         echo -e "${CYAN}===== ${TXT_M6_TITLE} =====${PLAIN}"
         
-        # [优化逻辑] 捕获输出并替换表头为中文
         raw_output=$("$ACME_SH" --list)
         
         if [ "$LANG_SET" == "cn" ]; then
              if [[ -z "$raw_output" ]]; then
                 echo -e "${YELLOW}${TXT_M6_EMPTY}${PLAIN}"
              else
-                # 使用 sed 替换表头关键字
-                # Main_Domain -> 主域名
-                # KeyLength   -> 密钥长度
-                # SAN_Domains -> SAN域名
-                # Profile     -> 配置文件
-                # CA          -> CA提供商
-                # Created     -> 创建时间
-                # Renew       -> 续期时间
                 echo "$raw_output" | sed \
                     -e 's/Main_Domain/主域名/g' \
                     -e 's/KeyLength/密钥长度/g' \
@@ -746,7 +730,7 @@ manage_certs() {
                     -e 's/CA /CA厂商 /g' \
                     -e 's/Created/创建时间/g' \
                     -e 's/Renew/续期时间/g' | \
-                    awk 'BEGIN {OFS="\t"} {print $0}' # 简单格式化
+                    awk 'BEGIN {OFS="\t"} {print $0}'
              fi
         else
              echo "$raw_output"
@@ -787,7 +771,6 @@ uninstall_menu() {
     read -p "${TXT_SELECT}" opt
     
     if [ "$opt" == "1" ]; then
-        # Delete Config & Shortcut
         rm -f "$CONFIG_FILE"
         [ -n "$SHORTCUT_NAME" ] && rm -f "/usr/bin/$SHORTCUT_NAME"
         echo -e "${GREEN}${TXT_UN_DONE}${PLAIN}"
@@ -797,7 +780,6 @@ uninstall_menu() {
         if [ "$confirm" == "DELETE" ]; then
             [ -f "$ACME_SH" ] && "$ACME_SH" --uninstall
             rm -rf "$ACME_DIR" "$CONFIG_FILE"
-            # Self delete logic if local
             if [ -f "$CURRENT_SCRIPT_PATH" ]; then
                 rm -f "$CURRENT_SCRIPT_PATH"
             fi
