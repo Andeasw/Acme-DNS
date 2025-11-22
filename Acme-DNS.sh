@@ -2,9 +2,8 @@
 
 # ==============================================================
 # Script Name: Acme-DNS-Super
-# Description: Advanced Acme.sh Manager (Strict Logic & Full Bilingual)
-# Version: 1.0.0 (Release)
-# Wiki Ref: https://github.com/acmesh-official/acme.sh/wiki/dnsapi
+# Description: Advanced Acme.sh Manager (Bilingual & Shortcut Support)
+# Version: 1.1.0 (Release)
 # ==============================================================
 
 # ==============================================================
@@ -21,23 +20,24 @@ PLAIN='\033[0m'
 CONFIG_FILE="$HOME/.acme_super_config"
 ACME_DIR="$HOME/.acme.sh"
 ACME_SH="$ACME_DIR/acme.sh"
+SCRIPT_PATH=$(readlink -f "$0")
 
 # Check Root
-[[ $EUID -ne 0 ]] && echo -e "${RED}Error: This script must be run as root!${PLAIN}" && exit 1
+[[ $EUID -ne 0 ]] && echo -e "${RED}Error: Root privileges required!${PLAIN}" && exit 1
 
 # ==============================================================
 # 1. Localization & Config / 本地化与配置
 # ==============================================================
 
-# Initialize Config
 load_config() {
     if [ -f "$CONFIG_FILE" ]; then
         source "$CONFIG_FILE"
     else
         CA_SERVER="letsencrypt"
-        KEY_LENGTH="2048" # Default RSA
+        KEY_LENGTH="2048"
         USER_EMAIL=""
-        LANG_SET="" 
+        LANG_SET=""
+        SHORTCUT_NAME=""
     fi
 }
 
@@ -47,30 +47,45 @@ CA_SERVER="$CA_SERVER"
 KEY_LENGTH="$KEY_LENGTH"
 USER_EMAIL="$USER_EMAIL"
 LANG_SET="$LANG_SET"
+SHORTCUT_NAME="$SHORTCUT_NAME"
 EOF
 }
 
-# Define Language Strings
 load_language_strings() {
     if [ "$LANG_SET" == "en" ]; then
-        # --- English Definition ---
-        TXT_TITLE="Acme-DNS-Super V1.0.0 | Cert Manager"
+        # --- English ---
+        TXT_TITLE="Acme-DNS-Super V1.1.0 | Cert Manager"
         TXT_STATUS_LABEL="Status"
         TXT_EMAIL_LABEL="Email"
         TXT_NOT_SET="Not Set"
         TXT_HINT_INSTALL=">> Warning: acme.sh is NOT installed. Please run [1] first. <<"
         
         # Menus
-        TXT_M_1="Init Environment (Deps, Install acme.sh, Register Accounts)"
-        TXT_M_2="Settings (Language / Email / CA / Key)"
+        TXT_M_1="Init Environment (Install, Register & Shortcut)"
+        TXT_M_2="Settings (Language / CA / Key / Shortcut)"
         TXT_M_3="Issue Cert - HTTP Mode (Single Domain)"
         TXT_M_4="Issue Cert - DNS API Mode (Wildcard Supported)"
-        TXT_M_5="Install Cert to Service (Nginx/Apache/etc)"
-        TXT_M_6="Cert Maintenance (Renew / Revoke)"
+        TXT_M_5="Install Cert to Service (Nginx/Apache)"
+        TXT_M_6="Cert Maintenance (List / Renew / Revoke)"
         TXT_M_7="Uninstall Script"
         TXT_M_0="Exit"
         
-        # Prompts & Messages
+        # Cert Manage Submenu
+        TXT_M6_TITLE="Certificate Management"
+        TXT_M6_RENEW="Force Renew (Renew specific domain)"
+        TXT_M6_REVOKE="Revoke & Delete (Revoke from CA & Remove local)"
+        TXT_M6_INPUT_RENEW="Enter domain to renew: "
+        TXT_M6_INPUT_DEL="Enter domain to revoke & delete: "
+        TXT_M6_CONFIRM_DEL="Are you sure you want to REVOKE & DELETE? (y/n): "
+        TXT_M6_DELETED="Certificate revoked and deleted."
+        
+        # Shortcut
+        TXT_SC_CREATE="Creating shortcut..."
+        TXT_SC_ASK="Enter shortcut name (Default: ssl): "
+        TXT_SC_SUCCESS="Shortcut created! You can now run this script by typing: "
+        TXT_SC_EXIST="Shortcut already exists: "
+        
+        # Common
         TXT_SELECT="Please select [0-7]: "
         TXT_INVALID="Invalid selection."
         TXT_PRESS_ENTER="Press Enter to continue..."
@@ -100,27 +115,11 @@ load_language_strings() {
         TXT_ISSUE_SUCCESS="Certificate Issued Successfully!"
         TXT_ISSUE_FAIL="Issue Failed. Check logs."
         
-        # DNS Specific
+        # DNS
         TXT_DNS_SEL="Select DNS Provider:"
         TXT_DNS_MANUAL="Manual Input (ENV Variables)"
-        TXT_DNS_INPUT_KEY="Input"
-        TXT_DNS_CF_KEY="CloudFlare Global API Key: "
-        TXT_DNS_CF_EMAIL="CloudFlare Email: "
-        TXT_DNS_LUA_KEY="LuaDNS API Key: "
-        TXT_DNS_LUA_EMAIL="LuaDNS Email: "
-        TXT_DNS_HE_USER="HE.net Username: "
-        TXT_DNS_HE_PASS="HE.net Password: "
-        TXT_DNS_CLOUDNS_ID="ClouDNS Auth ID: "
-        TXT_DNS_CLOUDNS_SUB="ClouDNS Sub Auth ID (Optional, Enter to skip): "
-        TXT_DNS_CLOUDNS_PASS="ClouDNS Password: "
-        TXT_DNS_PDNS_URL="PowerDNS URL (e.g. http://ns.example.com:8081): "
-        TXT_DNS_PDNS_ID="PowerDNS Server ID (e.g. localhost): "
-        TXT_DNS_PDNS_TOKEN="PowerDNS API Token: "
-        TXT_DNS_PDNS_TTL="PowerDNS TTL (Default 60): "
-        TXT_DNS_1984_USER="1984Hosting Username: "
-        TXT_DNS_1984_PASS="1984Hosting Password: "
-        TXT_DNS_DESEC_TOK="deSEC.io Token: "
-        TXT_DNS_DYNV6_TOK="dynv6 Token: "
+        TXT_DNS_KEY="API Key/Token: "
+        TXT_DNS_EMAIL="Account Email: "
         
         # Install
         TXT_INS_DOMAIN="Enter Issued Domain: "
@@ -137,34 +136,50 @@ load_language_strings() {
         TXT_SET_3="Switch Default CA"
         TXT_SET_4="Switch Key Type"
         TXT_SET_5="Upgrade acme.sh"
+        TXT_SET_6="Update/Repair Shortcut"
         TXT_SET_UPDATED="Settings Updated."
         
         # Uninstall
         TXT_UN_TITLE="Uninstall Options"
-        TXT_UN_1="Remove Script Config Only"
+        TXT_UN_1="Remove Script Config & Shortcut"
         TXT_UN_2="Full Uninstall (acme.sh + Certs + Script)"
         TXT_UN_CONFIRM="Type 'DELETE' to confirm full uninstall: "
         TXT_UN_DONE="Uninstalled."
 
     else
-        # --- Chinese Definition (Default) ---
-        TXT_TITLE="Acme-DNS-Super V1.0.0 | 证书管理大师"
+        # --- Chinese (Default) ---
+        TXT_TITLE="Acme-DNS-Super V1.1.0 | 证书管理大师"
         TXT_STATUS_LABEL="当前状态"
         TXT_EMAIL_LABEL="注册邮箱"
         TXT_NOT_SET="未设置"
         TXT_HINT_INSTALL=">> 警告：检测到未安装 acme.sh，请优先执行选项 [1] <<"
         
         # Menus
-        TXT_M_1="环境初始化 (安装依赖、acme.sh、注册账户)"
-        TXT_M_2="系统设置 (语言 / 邮箱 / CA / 密钥)"
+        TXT_M_1="环境初始化 (安装、注册账户、配置快捷指令)"
+        TXT_M_2="系统设置 (语言 / 邮箱 / CA / 密钥 / 快捷键)"
         TXT_M_3="签发证书 - HTTP 模式 (单域名)"
         TXT_M_4="签发证书 - DNS API 模式 (支持泛域名)"
         TXT_M_5="部署证书到服务 (Nginx/Apache 等)"
-        TXT_M_6="证书维护 (续期 / 吊销)"
+        TXT_M_6="证书维护 (查看列表 / 续期 / 吊销)"
         TXT_M_7="卸载脚本"
         TXT_M_0="退出"
         
-        # Prompts & Messages
+        # Cert Manage Submenu
+        TXT_M6_TITLE="证书管理列表"
+        TXT_M6_RENEW="强制续期 (Force Renew)"
+        TXT_M6_REVOKE="吊销并删除 (向 CA 吊销并清理本地文件)"
+        TXT_M6_INPUT_RENEW="请输入要续期的域名: "
+        TXT_M6_INPUT_DEL="请输入要吊销的域名: "
+        TXT_M6_CONFIRM_DEL="确认执行 [吊销+删除] 吗? (y/n): "
+        TXT_M6_DELETED="证书已吊销并彻底删除。"
+        
+        # Shortcut
+        TXT_SC_CREATE="正在配置快捷启动..."
+        TXT_SC_ASK="请输入快捷命令名称 (默认: ssl): "
+        TXT_SC_SUCCESS="快捷方式已创建！以后在终端输入以下命令即可运行："
+        TXT_SC_EXIST="快捷方式已存在: "
+
+        # Common
         TXT_SELECT="请输入选项 [0-7]: "
         TXT_INVALID="无效的选择。"
         TXT_PRESS_ENTER="按回车键继续..."
@@ -194,27 +209,11 @@ load_language_strings() {
         TXT_ISSUE_SUCCESS="证书签发成功！"
         TXT_ISSUE_FAIL="签发失败，请检查日志。"
         
-        # DNS Specific
+        # DNS
         TXT_DNS_SEL="选择 DNS 服务商:"
         TXT_DNS_MANUAL="手动输入环境变量 (通用模式)"
-        TXT_DNS_INPUT_KEY="请输入"
-        TXT_DNS_CF_KEY="CloudFlare Global API Key: "
-        TXT_DNS_CF_EMAIL="CloudFlare 账户邮箱: "
-        TXT_DNS_LUA_KEY="LuaDNS API Key: "
-        TXT_DNS_LUA_EMAIL="LuaDNS 账户邮箱: "
-        TXT_DNS_HE_USER="HE.net 用户名: "
-        TXT_DNS_HE_PASS="HE.net 密码: "
-        TXT_DNS_CLOUDNS_ID="ClouDNS Auth ID: "
-        TXT_DNS_CLOUDNS_SUB="ClouDNS Sub Auth ID (可选，回车跳过): "
-        TXT_DNS_CLOUDNS_PASS="ClouDNS 密码: "
-        TXT_DNS_PDNS_URL="PowerDNS URL (例 http://ns.example.com:8081): "
-        TXT_DNS_PDNS_ID="PowerDNS Server ID (例 localhost): "
-        TXT_DNS_PDNS_TOKEN="PowerDNS API Token: "
-        TXT_DNS_PDNS_TTL="PowerDNS TTL (默认 60): "
-        TXT_DNS_1984_USER="1984Hosting 用户名: "
-        TXT_DNS_1984_PASS="1984Hosting 密码: "
-        TXT_DNS_DESEC_TOK="deSEC.io Token: "
-        TXT_DNS_DYNV6_TOK="dynv6 Token: "
+        TXT_DNS_KEY="API 密钥 (Key/Token): "
+        TXT_DNS_EMAIL="账户邮箱 (Email): "
         
         # Install
         TXT_INS_DOMAIN="请输入已签发的域名: "
@@ -231,11 +230,12 @@ load_language_strings() {
         TXT_SET_3="切换默认 CA"
         TXT_SET_4="切换密钥类型"
         TXT_SET_5="强制更新 acme.sh"
+        TXT_SET_6="更新/修复 快捷启动命令"
         TXT_SET_UPDATED="设置已更新。"
         
         # Uninstall
         TXT_UN_TITLE="卸载选项"
-        TXT_UN_1="仅删除脚本配置"
+        TXT_UN_1="仅删除脚本配置 & 快捷方式"
         TXT_UN_2="彻底卸载 (移除 acme.sh + 证书 + 本脚本)"
         TXT_UN_CONFIRM="输入 'DELETE' 确认彻底卸载: "
         TXT_UN_DONE="已卸载。"
@@ -263,12 +263,36 @@ select_language_first() {
 }
 
 # ==============================================================
-# 2. Core: Dependency & Install / 核心：依赖与安装
+# 2. Core Functionality / 核心功能
 # ==============================================================
+
+setup_shortcut() {
+    echo -e "${YELLOW}${TXT_SC_CREATE}${PLAIN}"
+    
+    # 如果已有快捷方式，先清理
+    if [ -n "$SHORTCUT_NAME" ] && [ -f "/usr/bin/$SHORTCUT_NAME" ]; then
+        rm -f "/usr/bin/$SHORTCUT_NAME"
+    fi
+
+    read -p "${TXT_SC_ASK}" input_name
+    if [ -z "$input_name" ]; then
+        SHORTCUT_NAME="ssl"
+    else
+        SHORTCUT_NAME="$input_name"
+    fi
+
+    cat > "/usr/bin/$SHORTCUT_NAME" <<EOF
+#!/bin/bash
+bash "$SCRIPT_PATH"
+EOF
+    chmod +x "/usr/bin/$SHORTCUT_NAME"
+    save_config
+    
+    echo -e "${GREEN}${TXT_SC_SUCCESS}${CYAN}$SHORTCUT_NAME${PLAIN}"
+}
 
 check_dependencies() {
     echo -e "${CYAN}${TXT_CHECK_DEP}${PLAIN}"
-    
     local install_cmd=""
     local update_cmd=""
 
@@ -308,7 +332,6 @@ check_dependencies() {
         fi
     done
     
-    # Cron Daemon Check
     if [[ -n $(command -v systemctl) ]]; then
         if ! systemctl is-active --quiet cron && ! systemctl is-active --quiet crond; then
              systemctl start cron || systemctl start crond
@@ -320,9 +343,7 @@ register_accounts_logic() {
     local email=$1
     [ -z "$email" ] && return
     echo -e "${YELLOW}>>> ${TXT_ACC_SYNC}${PLAIN}"
-    # Register Let's Encrypt
     "$ACME_SH" --register-account -m "$email" --server letsencrypt --output-insecure >/dev/null 2>&1
-    # Register ZeroSSL
     "$ACME_SH" --register-account -m "$email" --server zerossl --output-insecure >/dev/null 2>&1
 }
 
@@ -347,11 +368,9 @@ install_acme_sh() {
             fi
         done
         
-        # Pipe Install
         curl https://get.acme.sh | sh -s email="$USER_EMAIL"
         
         if [ $? -ne 0 ]; then
-            # Fallback to Git
             echo -e "${RED}Curl failed, trying git...${PLAIN}"
             ! command -v git &> /dev/null && echo "Error: Git not found." && return
             git clone https://github.com/acmesh-official/acme.sh.git ~/.acme.sh
@@ -367,11 +386,16 @@ install_acme_sh() {
     "$ACME_SH" --upgrade --auto-upgrade
     save_config
     
+    # 引导创建快捷方式
+    if [ -z "$SHORTCUT_NAME" ]; then
+        setup_shortcut
+    fi
+    
     echo -e "${GREEN}${TXT_INIT_SUCCESS}${PLAIN}"
 }
 
 # ==============================================================
-# 3. Issue Certs / 证书签发
+# 3. Issue & Install / 签发与部署
 # ==============================================================
 
 issue_http() {
@@ -439,70 +463,70 @@ issue_dns() {
     echo -e "0. Back"
     read -p "${TXT_SELECT}" DNS_OPT
 
-    # Clear ENV to prevent conflicts
+    # Clear ENV
     unset CF_Key CF_Email LUA_Key LUA_Email HE_Username HE_Password CLOUDNS_AUTH_ID CLOUDNS_SUB_AUTH_ID CLOUDNS_AUTH_PASSWORD PDNS_Url PDNS_ServerId PDNS_Token PDNS_Ttl One984_Username One984_Password DEDYN_TOKEN DYNV6_TOKEN
 
     local dns_type=""
     case $DNS_OPT in
-        1) # CloudFlare
-            read -p "${TXT_DNS_CF_KEY}" CF_Key
-            read -p "${TXT_DNS_CF_EMAIL}" CF_Email
+        1)
+            read -p "CloudFlare Global API Key: " CF_Key
+            read -p "CloudFlare Email: " CF_Email
             export CF_Key="$CF_Key"
             export CF_Email="$CF_Email"
             dns_type="dns_cf"
             ;;
-        2) # LuaDNS
-            read -p "${TXT_DNS_LUA_KEY}" LUA_Key
-            read -p "${TXT_DNS_LUA_EMAIL}" LUA_Email
+        2)
+            read -p "LuaDNS API Key: " LUA_Key
+            read -p "LuaDNS Email: " LUA_Email
             export LUA_Key="$LUA_Key"
             export LUA_Email="$LUA_Email"
             dns_type="dns_lua"
             ;;
-        3) # HE.net
-            read -p "${TXT_DNS_HE_USER}" HE_Username
-            read -p "${TXT_DNS_HE_PASS}" HE_Password
+        3)
+            read -p "HE.net Username: " HE_Username
+            read -p "HE.net Password: " HE_Password
             export HE_Username="$HE_Username"
             export HE_Password="$HE_Password"
             dns_type="dns_he"
             ;;
-        4) # ClouDNS
-            read -p "${TXT_DNS_CLOUDNS_ID}" CLOUDNS_AUTH_ID
-            read -p "${TXT_DNS_CLOUDNS_SUB}" CLOUDNS_SUB_AUTH_ID
-            read -p "${TXT_DNS_CLOUDNS_PASS}" CLOUDNS_AUTH_PASSWORD
+        4)
+            read -p "ClouDNS Auth ID: " CLOUDNS_AUTH_ID
+            read -p "ClouDNS Sub Auth ID (Opt): " CLOUDNS_SUB_AUTH_ID
+            read -p "ClouDNS Password: " CLOUDNS_AUTH_PASSWORD
             export CLOUDNS_AUTH_ID="$CLOUDNS_AUTH_ID"
             export CLOUDNS_SUB_AUTH_ID="$CLOUDNS_SUB_AUTH_ID"
             export CLOUDNS_AUTH_PASSWORD="$CLOUDNS_AUTH_PASSWORD"
             dns_type="dns_cloudns"
             ;;
-        5) # PowerDNS
-            read -p "${TXT_DNS_PDNS_URL}" PDNS_Url
-            read -p "${TXT_DNS_PDNS_ID}" PDNS_ServerId
-            read -p "${TXT_DNS_PDNS_TOKEN}" PDNS_Token
-            read -p "${TXT_DNS_PDNS_TTL}" PDNS_Ttl
+        5)
+            read -p "PowerDNS URL: " PDNS_Url
+            read -p "PowerDNS ServerId: " PDNS_ServerId
+            read -p "PowerDNS Token: " PDNS_Token
+            read -p "PowerDNS TTL (60): " PDNS_Ttl
             export PDNS_Url="$PDNS_Url"
             export PDNS_ServerId="$PDNS_ServerId"
             export PDNS_Token="$PDNS_Token"
             export PDNS_Ttl="${PDNS_Ttl:-60}"
             dns_type="dns_pdns"
             ;;
-        6) # 1984Hosting
-            read -p "${TXT_DNS_1984_USER}" One984_Username
-            read -p "${TXT_DNS_1984_PASS}" One984_Password
+        6)
+            read -p "1984Hosting Username: " One984_Username
+            read -p "1984Hosting Password: " One984_Password
             export One984_Username="$One984_Username"
             export One984_Password="$One984_Password"
             dns_type="dns_1984hosting"
             ;;
-        7) # deSEC.io
-            read -p "${TXT_DNS_DESEC_TOK}" DEDYN_TOKEN
+        7)
+            read -p "deSEC.io Token: " DEDYN_TOKEN
             export DEDYN_TOKEN="$DEDYN_TOKEN"
             dns_type="dns_desec"
             ;;
-        8) # dynv6
-            read -p "${TXT_DNS_DYNV6_TOK}" DYNV6_TOKEN
+        8)
+            read -p "dynv6 Token: " DYNV6_TOKEN
             export DYNV6_TOKEN="$DYNV6_TOKEN"
             dns_type="dns_dynv6"
             ;;
-        9) # Manual
+        9)
             echo -e "${YELLOW}ENV (Key=Value), type 'end' to finish.${PLAIN}"
             while true; do
                 read -p "ENV > " env_in
@@ -528,10 +552,6 @@ issue_dns() {
     fi
 }
 
-# ==============================================================
-# 4. Install & Manage / 部署与管理
-# ==============================================================
-
 install_cert_menu() {
     if [ ! -f "$ACME_SH" ]; then echo -e "${RED}${TXT_WARN_NO_INIT}${PLAIN}"; return; fi
 
@@ -544,7 +564,6 @@ install_cert_menu() {
         DOMAIN=$default_domain
     fi
     
-    # Check Cert Existence
     if [ ! -d "$ACME_DIR/$DOMAIN" ] && [ ! -d "$ACME_DIR/${DOMAIN}_ecc" ]; then
         echo -e "${RED}Error: Cert not found for $DOMAIN${PLAIN}"
         return
@@ -563,7 +582,6 @@ install_cert_menu() {
     [ -n "$CA_PATH" ] && cmd_build="$cmd_build --fullchain-file $CA_PATH"
     [ -n "$RELOAD_CMD" ] && cmd_build="$cmd_build --reloadcmd \"$RELOAD_CMD\""
 
-    echo -e "${CYAN}Exec: $cmd_build${PLAIN}"
     eval "$cmd_build"
     
     if [ $? -eq 0 ]; then
@@ -573,6 +591,10 @@ install_cert_menu() {
     fi
 }
 
+# ==============================================================
+# 4. Settings & Maintenance / 设置与维护
+# ==============================================================
+
 settings_menu() {
     while true; do
         echo -e "${CYAN}===== ${TXT_SET_TITLE} =====${PLAIN}"
@@ -581,6 +603,7 @@ settings_menu() {
         echo "3. ${TXT_SET_3}"
         echo "4. ${TXT_SET_4}"
         echo "5. ${TXT_SET_5}"
+        echo "6. ${TXT_SET_6}"
         echo "0. ${TXT_M_0}"
         read -p "${TXT_SELECT}" choice
         
@@ -624,6 +647,7 @@ settings_menu() {
                 save_config
                 ;;
             5) [ -f "$ACME_SH" ] && "$ACME_SH" --upgrade ;;
+            6) setup_shortcut ;;
             0) return ;;
         esac
         echo -e "${GREEN}${TXT_SET_UPDATED}${PLAIN}"
@@ -634,26 +658,27 @@ manage_certs() {
     if [ ! -f "$ACME_SH" ]; then echo -e "${RED}${TXT_WARN_NO_INIT}${PLAIN}"; return; fi
     
     while true; do
-        echo -e "${CYAN}===== List =====${PLAIN}"
+        echo -e "${CYAN}===== ${TXT_M6_TITLE} =====${PLAIN}"
         "$ACME_SH" --list
         echo "------------------------"
-        echo "1. Renew Force"
-        echo "2. Revoke & Remove"
-        echo "0. Back"
+        echo "1. ${TXT_M6_RENEW}"
+        echo "2. ${TXT_M6_REVOKE}"
+        echo "0. ${TXT_M_0}"
         read -p "${TXT_SELECT}" choice
         case $choice in
             1)
-                read -p "Domain: " d
+                read -p "${TXT_M6_INPUT_RENEW}" d
                 [ -n "$d" ] && "$ACME_SH" --renew -d "$d" --force
                 ;;
             2)
-                read -p "Domain: " d
+                read -p "${TXT_M6_INPUT_DEL}" d
                 if [ -n "$d" ]; then
-                    read -p "Confirm (y/n): " c
+                    read -p "${TXT_M6_CONFIRM_DEL}" c
                     if [ "$c" == "y" ]; then
                         "$ACME_SH" --revoke -d "$d"
                         "$ACME_SH" --remove -d "$d"
                         rm -rf "$ACME_DIR/$d" "$ACME_DIR/${d}_ecc"
+                        echo -e "${GREEN}${TXT_M6_DELETED}${PLAIN}"
                     fi
                 fi
                 ;;
@@ -669,13 +694,17 @@ uninstall_menu() {
     read -p "${TXT_SELECT}" opt
     
     if [ "$opt" == "1" ]; then
+        # Delete Config & Shortcut
         rm -f "$CONFIG_FILE"
+        [ -n "$SHORTCUT_NAME" ] && rm -f "/usr/bin/$SHORTCUT_NAME"
         echo -e "${GREEN}${TXT_UN_DONE}${PLAIN}"
+        exit 0
     elif [ "$opt" == "2" ]; then
         read -p "${TXT_UN_CONFIRM}" confirm
         if [ "$confirm" == "DELETE" ]; then
             [ -f "$ACME_SH" ] && "$ACME_SH" --uninstall
             rm -rf "$ACME_DIR" "$CONFIG_FILE" "$0"
+            [ -n "$SHORTCUT_NAME" ] && rm -f "/usr/bin/$SHORTCUT_NAME"
             echo -e "${GREEN}${TXT_UN_DONE}${PLAIN}"
             exit 0
         fi
@@ -683,7 +712,7 @@ uninstall_menu() {
 }
 
 # ==============================================================
-# 5. Main Menu / 主菜单
+# 5. Main Entry / 主入口
 # ==============================================================
 
 show_menu() {
@@ -724,7 +753,7 @@ show_menu() {
     esac
 }
 
-# Execution
+# Run
 load_config
 select_language_first
 
