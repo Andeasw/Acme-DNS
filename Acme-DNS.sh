@@ -2,16 +2,16 @@
 
 # ==============================================================
 # Script Name: Acme-DNS-Super
-# Description: 高级 acme.sh 交互式管理脚本 (Let's Encrypt & ZeroSSL 专用版)
-# Version: 3.2 (Optimized)
+# Description: Advanced Acme.sh Management (Bilingual Edition)
+# Version: 3.3
 # Author: System Expert
 # ==============================================================
 
 # ==============================================================
-# 全局定义
+# 0. Global Definitions / 全局定义
 # ==============================================================
 
-# 颜色定义
+# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
@@ -19,26 +19,27 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 PLAIN='\033[0m'
 
-# 路径定义
+# Paths
 CONFIG_FILE="$HOME/.acme_super_config"
 ACME_DIR="$HOME/.acme.sh"
 ACME_SH="$ACME_DIR/acme.sh"
 
-# 检查 Root 权限
-[[ $EUID -ne 0 ]] && echo -e "${RED}[Error] 必须使用 root 权限运行此脚本！${PLAIN}" && exit 1
+# Root Check
+[[ $EUID -ne 0 ]] && echo -e "${RED}Error: Root privileges required! / 错误: 必须使用 root 权限！${PLAIN}" && exit 1
 
 # ==============================================================
-# 配置管理模块
+# 1. Configuration & Language / 配置与语言
 # ==============================================================
 
 load_config() {
     if [ -f "$CONFIG_FILE" ]; then
         source "$CONFIG_FILE"
     else
-        # 初始化默认配置 (优化：默认 RSA-2048)
+        # Default Init
         CA_SERVER="letsencrypt"
         KEY_LENGTH="2048"
         USER_EMAIL=""
+        LANG_SET="" 
     fi
 }
 
@@ -47,15 +48,108 @@ save_config() {
 CA_SERVER="$CA_SERVER"
 KEY_LENGTH="$KEY_LENGTH"
 USER_EMAIL="$USER_EMAIL"
+LANG_SET="$LANG_SET"
 EOF
 }
 
+# Set Language Strings
+set_language_text() {
+    if [ "$LANG_SET" == "en" ]; then
+        TXT_TITLE="Acme-DNS-Super V3.3 | Auto Cert Manager"
+        TXT_STATUS="Status"
+        TXT_NOT_SET="Not Set"
+        TXT_HINT_INSTALL=">> System detected acme.sh is NOT installed. Recommended: Run [1] first. <<"
+        TXT_MENU_1="Init Environment (Install Deps, acme.sh & Account)"
+        TXT_MENU_2="System Settings (Email / CA / Key Type)"
+        TXT_MENU_3="Issue Cert - HTTP Mode (Single Domain)"
+        TXT_MENU_4="Issue Cert - DNS API Mode (Wildcard Supported)"
+        TXT_MENU_5="Install Cert to Service (Nginx/Apache/etc)"
+        TXT_MENU_6="Cert Management (Renew / Revoke)"
+        TXT_MENU_7="Uninstall Script"
+        TXT_EXIT="Exit"
+        TXT_SELECT="Please select [0-7]: "
+        TXT_INVALID="Invalid selection."
+        TXT_PRESS_ENTER="Press Enter to continue..."
+        TXT_CHECK_DEP="Checking dependencies..."
+        TXT_MISSING_DEP="Missing dependencies detected, updating..."
+        TXT_INSTALLED="Installed"
+        TXT_SYNC_ACC="Syncing CA Account info..."
+        TXT_ENTER_EMAIL="Please enter Email for registration: "
+        TXT_EMAIL_ERR="Invalid Email format."
+        TXT_ACME_INSTALLED="acme.sh is already installed."
+        TXT_ACME_INSTALLING="Installing acme.sh..."
+        TXT_SUCCESS_INIT="Initialization completed!"
+        TXT_WARN_NO_INIT="Please initialize environment first!"
+        TXT_ENTER_DOMAIN="Enter Domain: "
+        TXT_DOMAIN_EMPTY="Domain cannot be empty."
+        TXT_CHOOSE_MODE="Choose Mode"
+        TXT_ISSUE_SUCCESS="Issue Success! Proceed to [Install Cert] step."
+        TXT_ISSUE_FAIL="Issue Failed."
+        TXT_INSTALL_NOTE="Target paths (Leave empty if not needed):"
+        TXT_INSTALL_SUCCESS="Cert installed & Auto-renew configured."
+    else
+        # Chinese (Default)
+        TXT_TITLE="Acme-DNS-Super V3.3 | 自动化证书管理"
+        TXT_STATUS="当前状态"
+        TXT_NOT_SET="未设置"
+        TXT_HINT_INSTALL=">> 检测到未安装 acme.sh，建议优先执行选项 [1] 初始化 <<"
+        TXT_MENU_1="环境初始化 (依赖安装 & acme.sh & 账户注册)"
+        TXT_MENU_2="系统设置 (修改邮箱 / 切换 CA / 密钥规格)"
+        TXT_MENU_3="申请证书 - HTTP 模式 (单域名)"
+        TXT_MENU_4="申请证书 - DNS API 模式 (支持泛域名)"
+        TXT_MENU_5="安装证书到服务 (Nginx/Apache 等)"
+        TXT_MENU_6="证书列表与维护 (续期/吊销)"
+        TXT_MENU_7="脚本卸载"
+        TXT_EXIT="退出"
+        TXT_SELECT="请输入选项 [0-7]: "
+        TXT_INVALID="无效选择"
+        TXT_PRESS_ENTER="按回车键继续..."
+        TXT_CHECK_DEP="正在检查系统核心依赖..."
+        TXT_MISSING_DEP="检测到缺失依赖，正在更新源并补全..."
+        TXT_INSTALLED="已安装"
+        TXT_SYNC_ACC="正在同步 CA 账户注册信息..."
+        TXT_ENTER_EMAIL="请输入用于注册的邮箱: "
+        TXT_EMAIL_ERR="邮箱格式错误，请重试。"
+        TXT_ACME_INSTALLED="acme.sh 已安装。"
+        TXT_ACME_INSTALLING="正在安装 acme.sh..."
+        TXT_SUCCESS_INIT="环境初始化配置完成！"
+        TXT_WARN_NO_INIT="请先执行环境初始化！"
+        TXT_ENTER_DOMAIN="请输入域名: "
+        TXT_DOMAIN_EMPTY="域名不能为空"
+        TXT_CHOOSE_MODE="请选择模式"
+        TXT_ISSUE_SUCCESS="签发成功！请继续执行 [安装证书] 步骤。"
+        TXT_ISSUE_FAIL="签发失败。"
+        TXT_INSTALL_NOTE="配置目标路径 (不需要的项直接回车):"
+        TXT_INSTALL_SUCCESS="安装成功，已配置自动续期。"
+    fi
+}
+
+select_language_first() {
+    if [ -z "$LANG_SET" ]; then
+        clear
+        echo -e "${BLUE}==============================================================${PLAIN}"
+        echo -e "Please select language / 请选择语言"
+        echo -e "${BLUE}==============================================================${PLAIN}"
+        echo -e "1. 中文 (Chinese)"
+        echo -e "2. English"
+        echo -e "--------------------------------------------------------------"
+        read -p "Select [1-2]: " lang_opt
+        if [ "$lang_opt" == "2" ]; then
+            LANG_SET="en"
+        else
+            LANG_SET="cn"
+        fi
+        save_config
+    fi
+    set_language_text
+}
+
 # ==============================================================
-# 核心功能：依赖与安装
+# 2. Core Functions / 核心功能
 # ==============================================================
 
 check_dependencies() {
-    echo -e "${CYAN}正在检查系统核心依赖...${PLAIN}"
+    echo -e "${CYAN}${TXT_CHECK_DEP}${PLAIN}"
     
     local install_cmd=""
     local update_cmd=""
@@ -70,7 +164,7 @@ check_dependencies() {
         install_cmd="apk add"
         update_cmd="apk update"
     else
-        echo -e "${RED}[Error] 未检测到支持的包管理器，请手动安装依赖。${PLAIN}"
+        echo -e "${RED}Error: No package manager found.${PLAIN}"
         return 1
     fi
 
@@ -85,20 +179,18 @@ check_dependencies() {
     done
 
     if [ "$missing_dep" = true ]; then
-        echo -e "${YELLOW}检测到缺失依赖，正在更新源并补全...${PLAIN}"
+        echo -e "${YELLOW}${TXT_MISSING_DEP}${PLAIN}"
         $update_cmd
     fi
 
     for dep in "${dependencies[@]}"; do
         if ! command -v $dep &> /dev/null; then
-            echo -e "${YELLOW}安装依赖: $dep ...${PLAIN}"
+            echo -e "${YELLOW}Installing: $dep ...${PLAIN}"
             $install_cmd $dep
         fi
     done
     
-    echo -e "${GREEN}所有依赖检查通过。${PLAIN}"
-
-    # 确保 cron 服务运行
+    # Ensure Cron
     if [[ -n $(command -v systemctl) ]]; then
         if ! systemctl is-active --quiet cron && ! systemctl is-active --quiet crond; then
              systemctl start cron || systemctl start crond
@@ -110,48 +202,40 @@ register_accounts() {
     local email=$1
     if [ -z "$email" ]; then return; fi
 
-    echo -e "${YELLOW}>>> 正在同步 CA 账户注册信息 (Email: $email)...${PLAIN}"
+    echo -e "${YELLOW}>>> ${TXT_SYNC_ACC} (Email: $email)${PLAIN}"
     
-    # 1. 注册 Let's Encrypt
-    echo -e "${CYAN}[Let's Encrypt] 正在注册/更新账户...${PLAIN}"
-    "$ACME_SH" --register-account -m "$email" --server letsencrypt --output-insecure
-    
-    # 2. 注册 ZeroSSL
-    echo -e "${CYAN}[ZeroSSL] 正在注册/更新账户...${PLAIN}"
-    "$ACME_SH" --register-account -m "$email" --server zerossl --output-insecure
-
-    echo -e "${GREEN}账户同步完成。${PLAIN}"
+    # 1. Let's Encrypt
+    "$ACME_SH" --register-account -m "$email" --server letsencrypt --output-insecure >/dev/null 2>&1
+    # 2. ZeroSSL
+    "$ACME_SH" --register-account -m "$email" --server zerossl --output-insecure >/dev/null 2>&1
 }
 
 install_acme_sh() {
     if [ -f "$ACME_SH" ]; then
-        echo -e "${GREEN}acme.sh 已安装。${PLAIN}"
-        echo -e "版本: $("$ACME_SH" --version | head -n 1)"
+        echo -e "${GREEN}${TXT_ACME_INSTALLED}${PLAIN}"
     else
-        echo -e "${CYAN}准备安装 acme.sh...${PLAIN}"
+        echo -e "${CYAN}${TXT_ACME_INSTALLING}${PLAIN}"
         
-        # 邮箱输入与校验
         while true; do
             if [ -z "$USER_EMAIL" ]; then
-                read -p "请输入注册邮箱 (将用于 ACME 账户通知): " input_email
+                read -p "${TXT_ENTER_EMAIL}" input_email
                 USER_EMAIL="$input_email"
             fi
             
             if [[ "$USER_EMAIL" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
-                save_config # 立即保存
+                save_config
                 break
             else
-                echo -e "${RED}邮箱格式错误，请重试。${PLAIN}"
+                echo -e "${RED}${TXT_EMAIL_ERR}${PLAIN}"
                 USER_EMAIL=""
             fi
         done
         
-        # 官方安装
         curl https://get.acme.sh | sh -s email="$USER_EMAIL"
         
         if [ $? -ne 0 ]; then
-            echo -e "${RED}官方源连接失败，切换至 Github 备用源...${PLAIN}"
-            ! command -v git &> /dev/null && echo "请先安装 git" && return
+            echo -e "${RED}Official install failed, trying git...${PLAIN}"
+            ! command -v git &> /dev/null && echo "Please install git first" && return
             git clone https://github.com/acmesh-official/acme.sh.git ~/.acme.sh
             cd ~/.acme.sh || exit
             ./acme.sh --install -m "$USER_EMAIL"
@@ -159,91 +243,70 @@ install_acme_sh() {
         fi
     fi
     
-    # 重新加载配置环境
     load_config
-    
-    # 确保账户注册到位
     register_accounts "$USER_EMAIL"
-    
-    # 设置默认 CA 和自动更新
     "$ACME_SH" --set-default-ca --server "$CA_SERVER"
     "$ACME_SH" --upgrade --auto-upgrade
-    
     save_config
-    echo -e "${GREEN}初始化环境配置完成！${PLAIN}"
+    
+    echo -e "${GREEN}${TXT_SUCCESS_INIT}${PLAIN}"
 }
 
 # ==============================================================
-# 证书签发 (Issue) 模块
+# 3. Issue & Install / 签发与部署
 # ==============================================================
 
 issue_http() {
-    if [ ! -f "$ACME_SH" ]; then echo -e "${RED}请先执行环境初始化！${PLAIN}"; return; fi
+    if [ ! -f "$ACME_SH" ]; then echo -e "${RED}${TXT_WARN_NO_INIT}${PLAIN}"; return; fi
     
-    echo -e "${YELLOW}>>> 证书签发 - HTTP 模式${PLAIN}"
-    echo -e "${YELLOW}提示：仅支持单域名 (非泛域名)，需占用 80 端口或利用现有 Web Server。${PLAIN}"
-    
-    read -p "请输入域名 (例: www.example.com): " DOMAIN
-    [ -z "$DOMAIN" ] && echo -e "${RED}域名不能为空${PLAIN}" && return
+    echo -e "${YELLOW}>>> HTTP Mode (Single Domain, Port 80 required)${PLAIN}"
+    read -p "${TXT_ENTER_DOMAIN}" DOMAIN
+    [ -z "$DOMAIN" ] && echo -e "${RED}${TXT_DOMAIN_EMPTY}${PLAIN}" && return
 
-    echo -e "${CYAN}验证模式:${PLAIN}"
-    echo -e "1. Standalone (脚本模拟 Web 服务，需 80 端口空闲)"
-    echo -e "2. Nginx (自动修改 Nginx 配置)"
-    echo -e "3. Apache (自动修改 Apache 配置)"
-    echo -e "4. Webroot (指定网站根目录)"
-    read -p "选择 [1-4]: " MODE
+    echo -e "1. Standalone"
+    echo -e "2. Nginx"
+    echo -e "3. Apache"
+    echo -e "4. Webroot"
+    read -p "${TXT_SELECT}" MODE
 
     local cmd_flags=""
     case $MODE in
-        1) 
-            if command -v netstat &>/dev/null && netstat -tuln | grep -q ":80 "; then
-                echo -e "${RED}警告: 80 端口被占用，Standalone 模式可能失败。${PLAIN}"
-                read -p "强制继续? (y/n): " force
-                [[ "$force" != "y" ]] && return
-            fi
-            cmd_flags="--standalone" 
-            ;;
+        1) cmd_flags="--standalone" ;;
         2) cmd_flags="--nginx" ;;
         3) cmd_flags="--apache" ;;
         4) 
-            read -p "输入网站根目录 (例 /var/www/html): " webroot
-            [ ! -d "$webroot" ] && echo -e "${RED}目录不存在${PLAIN}" && return
+            read -p "Webroot Path: " webroot
             cmd_flags="--webroot $webroot"
             ;;
-        *) echo -e "${RED}无效选择${PLAIN}"; return ;;
+        *) echo -e "${RED}${TXT_INVALID}${PLAIN}"; return ;;
     esac
 
     "$ACME_SH" --issue -d "$DOMAIN" $cmd_flags --keylength "$KEY_LENGTH" --server "$CA_SERVER"
     
     if [ $? -eq 0 ]; then
-        echo -e "${GREEN}签发成功！请继续执行 [安装/部署证书] 步骤。${PLAIN}"
+        echo -e "${GREEN}${TXT_ISSUE_SUCCESS}${PLAIN}"
         install_cert_menu "$DOMAIN"
     else
-        echo -e "${RED}签发失败，请检查端口、防火墙或日志。${PLAIN}"
+        echo -e "${RED}${TXT_ISSUE_FAIL}${PLAIN}"
     fi
 }
 
 issue_dns() {
-    if [ ! -f "$ACME_SH" ]; then echo -e "${RED}请先执行环境初始化！${PLAIN}"; return; fi
+    if [ ! -f "$ACME_SH" ]; then echo -e "${RED}${TXT_WARN_NO_INIT}${PLAIN}"; return; fi
 
-    echo -e "${YELLOW}>>> 证书签发 - DNS API 模式 (推荐)${PLAIN}"
-    echo -e "${YELLOW}提示：支持泛域名 (如 *.example.com)，需提供 DNS 厂商 API 密钥。${PLAIN}"
-    
-    read -p "请输入域名: " DOMAIN
-    [ -z "$DOMAIN" ] && echo -e "${RED}域名不能为空${PLAIN}" && return
+    echo -e "${YELLOW}>>> DNS API Mode (Wildcard Supported)${PLAIN}"
+    read -p "${TXT_ENTER_DOMAIN}" DOMAIN
+    [ -z "$DOMAIN" ] && echo -e "${RED}${TXT_DOMAIN_EMPTY}${PLAIN}" && return
 
-    echo -e "${CYAN}DNS 服务商:${PLAIN}"
     echo -e "1. CloudFlare"
     echo -e "2. Tencent (DNSPod)"
-    echo -e "3. Aliyun (阿里云)"
-    echo -e "4. Huawei Cloud"
-    echo -e "5. AWS Route53"
-    echo -e "6. 手动输入环境变量 (通用模式)"
-    echo -e "0. 返回"
-    read -p "选择 [0-6]: " DNS_OPT
+    echo -e "3. Aliyun"
+    echo -e "4. AWS Route53"
+    echo -e "5. Custom ENV (Manual)"
+    echo -e "0. Back"
+    read -p "${TXT_SELECT}" DNS_OPT
 
-    # 清理环境变量防止冲突
-    unset CF_Key CF_Email DP_Id DP_Key Ali_Key Ali_Secret HUAWEICLOUD_AccessKeyId HUAWEICLOUD_SecretAccessKey AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+    unset CF_Key CF_Email DP_Id DP_Key Ali_Key Ali_Secret AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
 
     local dns_type=""
     case $DNS_OPT in
@@ -269,71 +332,59 @@ issue_dns() {
             dns_type="dns_ali"
             ;;
         4)
-            read -p "Huawei KeyId: " HUAWEICLOUD_AccessKeyId
-            read -p "Huawei Secret: " HUAWEICLOUD_SecretAccessKey
-            export HUAWEICLOUD_AccessKeyId="$HUAWEICLOUD_AccessKeyId"
-            export HUAWEICLOUD_SecretAccessKey="$HUAWEICLOUD_SecretAccessKey"
-            dns_type="dns_huaweicloud"
-            ;;
-        5)
             read -p "AWS Access Key ID: " AWS_ACCESS_KEY_ID
             read -p "AWS Secret: " AWS_SECRET_ACCESS_KEY
             export AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID"
             export AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY"
             dns_type="dns_aws"
             ;;
-        6)
-            echo -e "${YELLOW}参照 acme.sh 官方文档输入变量。输入 'end' 结束。${PLAIN}"
+        5)
+            echo -e "${YELLOW}Input ENV variables (Format: Key=Value). Type 'end' to finish.${PLAIN}"
             while true; do
-                read -p "ENV (格式 Key=Value): " env_in
+                read -p "ENV > " env_in
                 [[ "$env_in" == "end" ]] && break
                 export "$env_in"
             done
-            read -p "请输入插件代码 (如 dns_cf): " dns_type
+            read -p "Plugin Code (e.g., dns_cf): " dns_type
             ;;
         0) return ;;
-        *) echo -e "${RED}无效选择${PLAIN}"; return ;;
+        *) return ;;
     esac
     
     [ -z "$dns_type" ] && return
 
-    echo -e "${CYAN}开始请求签发...${PLAIN}"
     "$ACME_SH" --issue --dns "$dns_type" -d "$DOMAIN" --keylength "$KEY_LENGTH" --server "$CA_SERVER"
     
     if [ $? -eq 0 ]; then
-        echo -e "${GREEN}签发成功！请继续执行 [安装/部署证书] 步骤。${PLAIN}"
+        echo -e "${GREEN}${TXT_ISSUE_SUCCESS}${PLAIN}"
         install_cert_menu "$DOMAIN"
     else
-        echo -e "${RED}签发失败。${PLAIN}"
+        echo -e "${RED}${TXT_ISSUE_FAIL}${PLAIN}"
     fi
 }
 
-# ==============================================================
-# 证书部署 (Install) 模块
-# ==============================================================
-
 install_cert_menu() {
-    if [ ! -f "$ACME_SH" ]; then echo -e "${RED}请先执行环境初始化！${PLAIN}"; return; fi
+    if [ ! -f "$ACME_SH" ]; then echo -e "${RED}${TXT_WARN_NO_INIT}${PLAIN}"; return; fi
 
     local default_domain=$1
-    echo -e "${YELLOW}>>> 证书安装 (Install Cert to Service)${PLAIN}"
+    echo -e "${YELLOW}>>> Install Cert${PLAIN}"
     
     if [ -z "$default_domain" ]; then
-        read -p "请输入已签发域名: " DOMAIN
+        read -p "${TXT_ENTER_DOMAIN}" DOMAIN
     else
         DOMAIN=$default_domain
     fi
 
     if [ ! -d "$ACME_DIR/$DOMAIN" ] && [ ! -d "$ACME_DIR/${DOMAIN}_ecc" ]; then
-        echo -e "${RED}未找到该域名的证书文件，请先签发。${PLAIN}"
+        echo -e "${RED}Cert not found.${PLAIN}"
         return
     fi
 
-    echo -e "${CYAN}目标文件路径 (不需要的项直接回车):${PLAIN}"
-    read -p "Cert Path (例 /etc/nginx/ssl/cert.pem): " CERT_PATH
-    read -p "Key  Path (例 /etc/nginx/ssl/key.pem):  " KEY_PATH
-    read -p "CA   Path (例 /etc/nginx/ssl/full.pem): " CA_PATH
-    read -p "Reload Cmd (例 systemctl reload nginx): " RELOAD_CMD
+    echo -e "${CYAN}${TXT_INSTALL_NOTE}${PLAIN}"
+    read -p "Cert Path (e.g. /etc/nginx/ssl/cert.pem): " CERT_PATH
+    read -p "Key  Path (e.g. /etc/nginx/ssl/key.pem):  " KEY_PATH
+    read -p "CA   Path (e.g. /etc/nginx/ssl/full.pem): " CA_PATH
+    read -p "Reload Cmd (e.g. systemctl reload nginx): " RELOAD_CMD
 
     local cmd_build="$ACME_SH --install-cert -d $DOMAIN"
     [[ "$KEY_LENGTH" == "ec"* ]] && cmd_build="$cmd_build --ecc"
@@ -343,104 +394,97 @@ install_cert_menu() {
     [ -n "$CA_PATH" ] && cmd_build="$cmd_build --fullchain-file $CA_PATH"
     [ -n "$RELOAD_CMD" ] && cmd_build="$cmd_build --reloadcmd \"$RELOAD_CMD\""
 
-    echo -e "${YELLOW}执行安装...${PLAIN}"
     eval "$cmd_build"
     
     if [ $? -eq 0 ]; then
-        echo -e "${GREEN}安装成功，已添加自动续期钩子。${PLAIN}"
+        echo -e "${GREEN}${TXT_INSTALL_SUCCESS}${PLAIN}"
     else
-        echo -e "${RED}安装失败，请检查路径权限。${PLAIN}"
+        echo -e "${RED}Install Failed.${PLAIN}"
     fi
 }
 
 # ==============================================================
-# 系统设置与维护
+# 4. Settings & Maintenance / 设置与维护
 # ==============================================================
 
 configure_settings() {
     while true; do
-        echo -e "${CYAN}===== 系统设置 =====${PLAIN}"
-        echo -e "状态: CA[${GREEN}$CA_SERVER${PLAIN}] | Key[${GREEN}$KEY_LENGTH${PLAIN}] | Email[${GREEN}$USER_EMAIL${PLAIN}]"
+        echo -e "${CYAN}===== Settings =====${PLAIN}"
+        echo -e "${TXT_STATUS}: CA[${GREEN}$CA_SERVER${PLAIN}] | Key[${GREEN}$KEY_LENGTH${PLAIN}] | Email[${GREEN}$USER_EMAIL${PLAIN}]"
         echo "------------------------"
-        echo "1. 修改注册邮箱 (将同步更新 CA 账户)"
-        echo "2. 切换默认 CA (Let's Encrypt / ZeroSSL)"
-        echo "3. 切换密钥规格 (RSA/ECC)"
-        echo "4. 强制更新 acme.sh"
-        echo "0. 返回"
-        read -p "选择: " choice
+        echo "1. Change Email & Sync Accounts"
+        echo "2. Change Default CA"
+        echo "3. Change Key Spec (RSA/ECC)"
+        echo "4. Upgrade acme.sh"
+        echo "0. Back"
+        read -p "${TXT_SELECT}" choice
         
         case $choice in
             1)
-                read -p "新邮箱: " new_email
+                read -p "${TXT_ENTER_EMAIL}" new_email
                 if [[ "$new_email" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
                     USER_EMAIL="$new_email"
                     save_config
                     register_accounts "$USER_EMAIL"
                 else
-                    echo -e "${RED}格式错误${PLAIN}"
+                    echo -e "${RED}${TXT_EMAIL_ERR}${PLAIN}"
                 fi
                 ;;
             2)
-                echo "1. Let's Encrypt (默认)"
+                echo "1. Let's Encrypt (Default)"
                 echo "2. ZeroSSL"
-                echo "3. Google Public CA"
-                read -p "选择 CA: " ca_opt
+                read -p "Select CA: " ca_opt
                 case $ca_opt in
                     1) CA_SERVER="letsencrypt" ;;
                     2) CA_SERVER="zerossl" ;;
-                    3) CA_SERVER="google" ;;
                     *) CA_SERVER="letsencrypt" ;;
                 esac
                 "$ACME_SH" --set-default-ca --server "$CA_SERVER"
                 save_config
                 ;;
             3)
-                echo "1. RSA-2048 (兼容性好)"
-                echo "2. RSA-4096"
-                echo "3. ECC-256 (速度快)"
-                read -p "选择 Key: " key_opt
+                echo "1. RSA-2048 (Default)"
+                echo "2. ECC-256"
+                read -p "Select Key: " key_opt
                 case $key_opt in
                     1) KEY_LENGTH="2048" ;;
-                    2) KEY_LENGTH="4096" ;;
-                    3) KEY_LENGTH="ec-256" ;;
+                    2) KEY_LENGTH="ec-256" ;;
                     *) KEY_LENGTH="2048" ;;
                 esac
                 save_config
                 ;;
             4) "$ACME_SH" --upgrade ;;
             0) return ;;
-            *) echo -e "${RED}无效${PLAIN}" ;;
         esac
-        echo -e "${GREEN}设置已更新${PLAIN}"
     done
 }
 
 manage_certs() {
-    if [ ! -f "$ACME_SH" ]; then echo -e "${RED}请先执行环境初始化！${PLAIN}"; return; fi
+    if [ ! -f "$ACME_SH" ]; then echo -e "${RED}${TXT_WARN_NO_INIT}${PLAIN}"; return; fi
     
     while true; do
-        echo -e "${CYAN}===== 证书维护 =====${PLAIN}"
+        echo -e "${CYAN}===== Cert List =====${PLAIN}"
         "$ACME_SH" --list
         echo "------------------------"
-        echo "1. 手动续期 (Force Renew)"
-        echo "2. 吊销并删除 (Revoke & Delete)"
-        echo "0. 返回"
-        read -p "选择: " choice
+        echo "1. Force Renew"
+        echo "2. Revoke & Delete"
+        echo "0. Back"
+        read -p "${TXT_SELECT}" choice
         
         case $choice in
             1) 
-                read -p "域名: " d_renew
+                read -p "Domain: " d_renew
                 [ -n "$d_renew" ] && "$ACME_SH" --renew -d "$d_renew" --force 
                 ;;
             2)
-                read -p "域名: " d_del
+                read -p "Domain: " d_del
                 if [ -n "$d_del" ]; then
-                     read -p "确认吊销? (y/n): " confirm
+                     read -p "Confirm (y/n): " confirm
                      if [[ "$confirm" == "y" ]]; then
                         "$ACME_SH" --revoke -d "$d_del"
                         "$ACME_SH" --remove -d "$d_del"
                         rm -rf "$ACME_DIR/$d_del" "$ACME_DIR/${d_del}_ecc"
-                        echo -e "${GREEN}已彻底删除${PLAIN}"
+                        echo -e "${GREEN}Deleted.${PLAIN}"
                      fi
                 fi
                 ;;
@@ -450,54 +494,55 @@ manage_certs() {
 }
 
 uninstall_menu() {
-    echo -e "${RED}===== 卸载选项 =====${PLAIN}"
-    echo "1. 仅清理脚本配置 (保留 acme.sh 及证书)"
-    echo "2. 彻底卸载 (移除 acme.sh、证书、任务及本脚本)"
-    read -p "选择 [1-2]: " u_opt
+    echo -e "${RED}===== Uninstall =====${PLAIN}"
+    echo "1. Remove Script Config"
+    echo "2. Full Uninstall (acme.sh + Certs + Script)"
+    read -p "Select [1-2]: " u_opt
     
     if [[ "$u_opt" == "1" ]]; then
         rm -f "$CONFIG_FILE"
-        echo -e "${GREEN}配置已清理${PLAIN}"
+        echo -e "${GREEN}Config removed.${PLAIN}"
     elif [[ "$u_opt" == "2" ]]; then
-        read -p "确认彻底卸载? 输入 'DELETE': " confirm
+        read -p "Type 'DELETE' to confirm: " confirm
         if [[ "$confirm" == "DELETE" ]]; then
             [ -f "$ACME_SH" ] && "$ACME_SH" --uninstall
             rm -rf "$ACME_DIR" "$CONFIG_FILE" "$0"
-            echo -e "${GREEN}卸载完成，脚本已自毁。${PLAIN}"
+            echo -e "${GREEN}Uninstalled.${PLAIN}"
             exit 0
         fi
     fi
 }
 
 # ==============================================================
-# 主界面
+# 5. Main Entry / 主入口
 # ==============================================================
 
 show_menu() {
     clear
     echo -e "${BLUE}==============================================================${PLAIN}"
-    echo -e "${BLUE}           Acme-DNS-Super V3.2  |  自动化证书管理             ${PLAIN}"
+    echo -e "${BLUE}           ${TXT_TITLE}           ${PLAIN}"
     echo -e "${BLUE}==============================================================${PLAIN}"
-    # 优化：单行显示状态
-    echo -e "当前状态: CA: ${GREEN}${CA_SERVER}${PLAIN} | Key: ${GREEN}${KEY_LENGTH}${PLAIN} | Email: ${GREEN}${USER_EMAIL:-未设置}${PLAIN}"
+    # 单行状态显示
+    echo -e "${TXT_STATUS}: CA: ${GREEN}${CA_SERVER}${PLAIN} | Key: ${GREEN}${KEY_LENGTH}${PLAIN} | Email: ${GREEN}${USER_EMAIL:-${TXT_NOT_SET}}${PLAIN}"
     echo -e "${BLUE}--------------------------------------------------------------${PLAIN}"
 
+    # 柔性引导提示 (仅提示，不阻断)
     if [ ! -f "$ACME_SH" ]; then
-        echo -e "${RED}>> 检测到系统未安装 acme.sh，请优先执行选项 [1] <<${PLAIN}"
+        echo -e "${RED}${TXT_HINT_INSTALL}${PLAIN}"
     fi
 
-    echo -e " 1. 初始化环境 (安装依赖 & acme.sh & 注册账户)"
-    echo -e " 2. 系统设置 (修改邮箱 / 切换 CA / 密钥规格)"
+    echo -e " 1. ${TXT_MENU_1}"
+    echo -e " 2. ${TXT_MENU_2}"
     echo -e "--------------------------------------------------------------"
-    echo -e " 3. 申请证书 - HTTP 模式 (单域名)"
-    echo -e " 4. 申请证书 - DNS API 模式 (支持泛域名)"
-    echo -e " 5. 安装证书到服务 (Nginx/Apache 等)"
+    echo -e " 3. ${TXT_MENU_3}"
+    echo -e " 4. ${TXT_MENU_4}"
+    echo -e " 5. ${TXT_MENU_5}"
     echo -e "--------------------------------------------------------------"
-    echo -e " 6. 证书列表与维护 (续期/吊销)"
-    echo -e " 7. 脚本卸载"
-    echo -e " 0. 退出"
+    echo -e " 6. ${TXT_MENU_6}"
+    echo -e " 7. ${TXT_MENU_7}"
+    echo -e " 0. ${TXT_EXIT}"
     echo -e "${BLUE}--------------------------------------------------------------${PLAIN}"
-    read -p " 请输入选项 [0-7]: " num
+    read -p " ${TXT_SELECT}" num
 
     case $num in
         1) check_dependencies && install_acme_sh ;;
@@ -508,14 +553,16 @@ show_menu() {
         6) manage_certs ;;
         7) uninstall_menu ;;
         0) exit 0 ;;
-        *) echo -e "${RED}无效选择${PLAIN}" ;;
+        *) echo -e "${RED}${TXT_INVALID}${PLAIN}" ;;
     esac
 }
 
-# 入口逻辑
+# Run
 load_config
+select_language_first
+
 while true; do
     show_menu
     echo ""
-    read -p "按回车键继续..."
+    read -p "${TXT_PRESS_ENTER}"
 done
