@@ -3,7 +3,7 @@
 # ==============================================================
 # Script Name: Acme-DNS-Super
 # Description: Advanced Acme.sh Manager (Bilingual & Shortcut Support)
-# Version: 1.1.0 (Release)
+# Version: 1.0.0 (Release)
 # ==============================================================
 
 # ==============================================================
@@ -54,7 +54,7 @@ EOF
 load_language_strings() {
     if [ "$LANG_SET" == "en" ]; then
         # --- English ---
-        TXT_TITLE="Acme-DNS-Super V1.1.0 | Cert Manager"
+        TXT_TITLE="Acme-DNS-Super V1.0.0 | Cert Manager"
         TXT_STATUS_LABEL="Status"
         TXT_EMAIL_LABEL="Email"
         TXT_NOT_SET="Not Set"
@@ -148,7 +148,7 @@ load_language_strings() {
 
     else
         # --- Chinese (Default) ---
-        TXT_TITLE="Acme-DNS-Super V1.1.0 | 证书管理大师"
+        TXT_TITLE="Acme-DNS-Super V1.0.0 | 证书管理大师"
         TXT_STATUS_LABEL="当前状态"
         TXT_EMAIL_LABEL="注册邮箱"
         TXT_NOT_SET="未设置"
