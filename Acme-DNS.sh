@@ -3,13 +3,15 @@
 # ==============================================================
 # Script Name: Acme-DNS-Super
 # Description: Advanced Acme.sh Manager (Bilingual & Shortcut Support)
-# Version: 1.0.0 (Release)
+# Version: 0.0.1 (Strict Logic Release)
 # By Prince 2025.10
 # ==============================================================
 
 # ==============================================================
 # 0. Global Definitions / 全局定义
 # ==============================================================
+
+set -u # 报错未定义变量
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -21,13 +23,42 @@ PLAIN='\033[0m'
 CONFIG_FILE="$HOME/.acme_super_config"
 ACME_DIR="$HOME/.acme.sh"
 ACME_SH="$ACME_DIR/acme.sh"
-SCRIPT_PATH=$(readlink -f "$0")
+
+# 获取脚本真实路径（处理软链接和相对路径）
+CURRENT_SCRIPT_PATH=""
+if [ -f "$0" ]; then
+    CURRENT_SCRIPT_PATH=$(readlink -f "$0")
+fi
 
 # Check Root
-[[ $EUID -ne 0 ]] && echo -e "${RED}Error: Root privileges required!${PLAIN}" && exit 1
+[[ $EUID -ne 0 ]] && echo -e "${RED}Error: Root privileges required! / 需要 Root 权限!${PLAIN}" && exit 1
 
 # ==============================================================
-# 1. Localization & Config / 本地化与配置
+# 1. Input Validation / 输入安全校验
+# ==============================================================
+
+check_valid_domain() {
+    local domain="$1"
+    # 允许字母、数字、点、连字符，禁止特殊字符防止注入
+    if [[ ! "$domain" =~ ^[a-zA-Z0-9.-]+$ ]]; then
+        echo -e "${RED}Error: Invalid domain format! Contains illegal characters.${PLAIN}"
+        return 1
+    fi
+    return 0
+}
+
+check_path_safety() {
+    local path="$1"
+    # 简单的路径检查，防止过分危险的输入
+    if [[ "$path" == *"&"* ]] || [[ "$path" == *"|"* ]] || [[ "$path" == *";"* ]]; then
+        echo -e "${RED}Error: Path contains illegal characters for security reasons.${PLAIN}"
+        return 1
+    fi
+    return 0
+}
+
+# ==============================================================
+# 2. Localization & Config / 本地化与配置
 # ==============================================================
 
 load_config() {
@@ -55,7 +86,7 @@ EOF
 load_language_strings() {
     if [ "$LANG_SET" == "en" ]; then
         # --- English ---
-        TXT_TITLE="Acme-DNS-Super V1.0.0 | Cert Manager By Prince"
+        TXT_TITLE="Acme-DNS-Super V0.0.1 | Cert Manager By Prince"
         TXT_STATUS_LABEL="Status"
         TXT_EMAIL_LABEL="Email"
         TXT_NOT_SET="Not Set"
@@ -79,12 +110,14 @@ load_language_strings() {
         TXT_M6_INPUT_DEL="Enter domain to revoke & delete: "
         TXT_M6_CONFIRM_DEL="Are you sure you want to REVOKE & DELETE? (y/n): "
         TXT_M6_DELETED="Certificate revoked and deleted."
+        TXT_M6_EMPTY="No certificates found."
         
         # Shortcut
         TXT_SC_CREATE="Creating shortcut..."
         TXT_SC_ASK="Enter shortcut name (Default: ssl): "
         TXT_SC_SUCCESS="Shortcut created! You can now run this script by typing: "
-        TXT_SC_EXIST="Shortcut already exists: "
+        TXT_SC_FAIL_ONLINE="Error: Online (Curl) mode detected."
+        TXT_SC_FAIL_HINT="Please download the script locally using 'wget' to enable shortcuts."
         
         # Common
         TXT_SELECT="Please select [0-7]: "
@@ -149,7 +182,7 @@ load_language_strings() {
 
     else
         # --- Chinese (Default) ---
-        TXT_TITLE="Acme-DNS-Super V1.0.0 | 证书管理大师 By Prince"
+        TXT_TITLE="Acme-DNS-Super V0.0.1 | 证书管理大师 By Prince"
         TXT_STATUS_LABEL="当前状态"
         TXT_EMAIL_LABEL="注册邮箱"
         TXT_NOT_SET="未设置"
@@ -173,12 +206,14 @@ load_language_strings() {
         TXT_M6_INPUT_DEL="请输入要吊销的域名: "
         TXT_M6_CONFIRM_DEL="确认执行 [吊销+删除] 吗? (y/n): "
         TXT_M6_DELETED="证书已吊销并彻底删除。"
+        TXT_M6_EMPTY="未找到任何证书。"
         
         # Shortcut
         TXT_SC_CREATE="正在配置快捷启动..."
         TXT_SC_ASK="请输入快捷命令名称 (默认: ssl): "
         TXT_SC_SUCCESS="快捷方式已创建！以后在终端输入以下命令即可运行："
-        TXT_SC_EXIST="快捷方式已存在: "
+        TXT_SC_FAIL_ONLINE="错误：检测到脚本正在在线运行 (Curl/Pipe)。"
+        TXT_SC_FAIL_HINT="快捷方式仅支持本地文件。请先使用 wget 下载脚本到本地后再运行。"
 
         # Common
         TXT_SELECT="请输入选项 [0-7]: "
@@ -264,13 +299,22 @@ select_language_first() {
 }
 
 # ==============================================================
-# 2. Core Functionality / 核心功能
+# 3. Core Functionality / 核心功能
 # ==============================================================
 
 setup_shortcut() {
     echo -e "${YELLOW}${TXT_SC_CREATE}${PLAIN}"
     
-    # 如果已有快捷方式，先清理
+    # [优化逻辑] 检测是否为在线运行 (Curl模式下 $0 通常不是普通文件)
+    if [ -z "$CURRENT_SCRIPT_PATH" ] || [ ! -f "$CURRENT_SCRIPT_PATH" ]; then
+        echo -e "${RED}${TXT_SC_FAIL_ONLINE}${PLAIN}"
+        echo -e "${YELLOW}${TXT_SC_FAIL_HINT}${PLAIN}"
+        echo -e "Example: wget https://your-script-url.com/acme-super.sh && bash acme-super.sh"
+        read -p "${TXT_PRESS_ENTER}"
+        return
+    fi
+
+    # 清理旧快捷方式
     if [ -n "$SHORTCUT_NAME" ] && [ -f "/usr/bin/$SHORTCUT_NAME" ]; then
         rm -f "/usr/bin/$SHORTCUT_NAME"
     fi
@@ -279,12 +323,18 @@ setup_shortcut() {
     if [ -z "$input_name" ]; then
         SHORTCUT_NAME="ssl"
     else
+        # 校验快捷键名称安全性
+        if [[ ! "$input_name" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+             echo -e "${RED}Invalid name.${PLAIN}"
+             return
+        fi
         SHORTCUT_NAME="$input_name"
     fi
 
+    # 创建快捷方式
     cat > "/usr/bin/$SHORTCUT_NAME" <<EOF
 #!/bin/bash
-bash "$SCRIPT_PATH"
+bash "$CURRENT_SCRIPT_PATH"
 EOF
     chmod +x "/usr/bin/$SHORTCUT_NAME"
     save_config
@@ -333,6 +383,7 @@ check_dependencies() {
         fi
     done
     
+    # 确保 cron 服务运行
     if [[ -n $(command -v systemctl) ]]; then
         if ! systemctl is-active --quiet cron && ! systemctl is-active --quiet crond; then
              systemctl start cron || systemctl start crond
@@ -396,7 +447,7 @@ install_acme_sh() {
 }
 
 # ==============================================================
-# 3. Issue & Install / 签发与部署
+# 4. Issue & Install / 签发与部署
 # ==============================================================
 
 issue_http() {
@@ -404,7 +455,7 @@ issue_http() {
     
     echo -e "${YELLOW}>>> HTTP Mode${PLAIN}"
     read -p "${TXT_INPUT_DOMAIN}" DOMAIN
-    [ -z "$DOMAIN" ] && echo -e "${RED}${TXT_DOMAIN_EMPTY}${PLAIN}" && return
+    check_valid_domain "$DOMAIN" || return
 
     echo -e "${TXT_HTTP_MODE_SEL}"
     echo -e "${TXT_HTTP_STANDALONE}"
@@ -427,6 +478,7 @@ issue_http() {
         3) cmd_flags="--apache" ;;
         4) 
             read -p "${TXT_INPUT_WEBROOT}" webroot
+            check_path_safety "$webroot" || return
             [ ! -d "$webroot" ] && echo -e "${RED}Path not found.${PLAIN}" && return
             cmd_flags="--webroot $webroot"
             ;;
@@ -449,7 +501,7 @@ issue_dns() {
 
     echo -e "${YELLOW}>>> DNS API Mode${PLAIN}"
     read -p "${TXT_INPUT_DOMAIN}" DOMAIN
-    [ -z "$DOMAIN" ] && echo -e "${RED}${TXT_DOMAIN_EMPTY}${PLAIN}" && return
+    check_valid_domain "$DOMAIN" || return
 
     echo -e "${TXT_DNS_SEL}"
     echo -e "1. CloudFlare"
@@ -532,7 +584,12 @@ issue_dns() {
             while true; do
                 read -p "ENV > " env_in
                 [[ "$env_in" == "end" ]] && break
-                export "$env_in"
+                # 简单校验环境变量名
+                if [[ "$env_in" =~ ^[a-zA-Z0-9_]+=[a-zA-Z0-9_.-]+$ ]]; then
+                    export "$env_in"
+                else
+                     echo "Format ignored. Use KEY=VALUE"
+                fi
             done
             read -p "Plugin Name (e.g. dns_ali): " dns_type
             ;;
@@ -564,6 +621,7 @@ install_cert_menu() {
     else
         DOMAIN=$default_domain
     fi
+    check_valid_domain "$DOMAIN" || return
     
     if [ ! -d "$ACME_DIR/$DOMAIN" ] && [ ! -d "$ACME_DIR/${DOMAIN}_ecc" ]; then
         echo -e "${RED}Error: Cert not found for $DOMAIN${PLAIN}"
@@ -574,6 +632,10 @@ install_cert_menu() {
     read -p "${TXT_INS_KEY_PATH}" KEY_PATH
     read -p "${TXT_INS_CA_PATH}" CA_PATH
     read -p "${TXT_INS_RELOAD}" RELOAD_CMD
+
+    check_path_safety "$CERT_PATH" || return
+    check_path_safety "$KEY_PATH" || return
+    check_path_safety "$CA_PATH" || return
 
     local cmd_build="$ACME_SH --install-cert -d $DOMAIN"
     [[ "$KEY_LENGTH" == "ec"* ]] && cmd_build="$cmd_build --ecc"
@@ -593,7 +655,7 @@ install_cert_menu() {
 }
 
 # ==============================================================
-# 4. Settings & Maintenance / 设置与维护
+# 5. Settings & Maintenance / 设置与维护
 # ==============================================================
 
 settings_menu() {
@@ -660,7 +722,36 @@ manage_certs() {
     
     while true; do
         echo -e "${CYAN}===== ${TXT_M6_TITLE} =====${PLAIN}"
-        "$ACME_SH" --list
+        
+        # [优化逻辑] 捕获输出并替换表头为中文
+        raw_output=$("$ACME_SH" --list)
+        
+        if [ "$LANG_SET" == "cn" ]; then
+             if [[ -z "$raw_output" ]]; then
+                echo -e "${YELLOW}${TXT_M6_EMPTY}${PLAIN}"
+             else
+                # 使用 sed 替换表头关键字
+                # Main_Domain -> 主域名
+                # KeyLength   -> 密钥长度
+                # SAN_Domains -> SAN域名
+                # Profile     -> 配置文件
+                # CA          -> CA提供商
+                # Created     -> 创建时间
+                # Renew       -> 续期时间
+                echo "$raw_output" | sed \
+                    -e 's/Main_Domain/主域名/g' \
+                    -e 's/KeyLength/密钥长度/g' \
+                    -e 's/SAN_Domains/SAN域名/g' \
+                    -e 's/Profile/配置文件/g' \
+                    -e 's/CA /CA厂商 /g' \
+                    -e 's/Created/创建时间/g' \
+                    -e 's/Renew/续期时间/g' | \
+                    awk 'BEGIN {OFS="\t"} {print $0}' # 简单格式化
+             fi
+        else
+             echo "$raw_output"
+        fi
+
         echo "------------------------"
         echo "1. ${TXT_M6_RENEW}"
         echo "2. ${TXT_M6_REVOKE}"
@@ -669,11 +760,12 @@ manage_certs() {
         case $choice in
             1)
                 read -p "${TXT_M6_INPUT_RENEW}" d
-                [ -n "$d" ] && "$ACME_SH" --renew -d "$d" --force
+                check_valid_domain "$d" && "$ACME_SH" --renew -d "$d" --force
                 ;;
             2)
                 read -p "${TXT_M6_INPUT_DEL}" d
                 if [ -n "$d" ]; then
+                    check_valid_domain "$d" || continue
                     read -p "${TXT_M6_CONFIRM_DEL}" c
                     if [ "$c" == "y" ]; then
                         "$ACME_SH" --revoke -d "$d"
@@ -704,7 +796,11 @@ uninstall_menu() {
         read -p "${TXT_UN_CONFIRM}" confirm
         if [ "$confirm" == "DELETE" ]; then
             [ -f "$ACME_SH" ] && "$ACME_SH" --uninstall
-            rm -rf "$ACME_DIR" "$CONFIG_FILE" "$0"
+            rm -rf "$ACME_DIR" "$CONFIG_FILE"
+            # Self delete logic if local
+            if [ -f "$CURRENT_SCRIPT_PATH" ]; then
+                rm -f "$CURRENT_SCRIPT_PATH"
+            fi
             [ -n "$SHORTCUT_NAME" ] && rm -f "/usr/bin/$SHORTCUT_NAME"
             echo -e "${GREEN}${TXT_UN_DONE}${PLAIN}"
             exit 0
@@ -713,7 +809,7 @@ uninstall_menu() {
 }
 
 # ==============================================================
-# 5. Main Entry / 主入口
+# 6. Main Entry / 主入口
 # ==============================================================
 
 show_menu() {
