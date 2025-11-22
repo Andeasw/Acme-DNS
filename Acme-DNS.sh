@@ -2,9 +2,8 @@
 
 # ==============================================================
 # Script Name: Acme-DNS-Super
-# Description: Advanced Acme.sh Manager (Bilingual & Shortcut Support)
-# Version: 1.0.0 (Release)
-# By Prince 2025.10
+# Version: 0.0.1 (test)
+# Optimized By: Prince 2025.10
 # ==============================================================
 
 # ==============================================================
@@ -24,7 +23,7 @@ ACME_SH="$ACME_DIR/acme.sh"
 SCRIPT_PATH=$(readlink -f "$0")
 
 # Check Root
-[[ $EUID -ne 0 ]] && echo -e "${RED}Error: Root privileges required!${PLAIN}" && exit 1
+[[ $EUID -ne 0 ]] && echo -e "${RED}Error: Root privileges required! / 需要 Root 权限！${PLAIN}" && exit 1
 
 # ==============================================================
 # 1. Localization & Config / 本地化与配置
@@ -55,7 +54,7 @@ EOF
 load_language_strings() {
     if [ "$LANG_SET" == "en" ]; then
         # --- English ---
-        TXT_TITLE="Acme-DNS-Super V1.0.0 | Cert Manager"
+        TXT_TITLE="Acme-DNS-Super V0.0.1 | Cert Manager"
         TXT_STATUS_LABEL="Status"
         TXT_EMAIL_LABEL="Email"
         TXT_NOT_SET="Not Set"
@@ -71,7 +70,7 @@ load_language_strings() {
         TXT_M_7="Uninstall Script"
         TXT_M_0="Exit"
         
-        # Cert Manage Submenu
+        # Cert Manage
         TXT_M6_TITLE="Certificate Management"
         TXT_M6_RENEW="Force Renew (Renew specific domain)"
         TXT_M6_REVOKE="Revoke & Delete (Revoke from CA & Remove local)"
@@ -79,11 +78,12 @@ load_language_strings() {
         TXT_M6_INPUT_DEL="Enter domain to revoke & delete: "
         TXT_M6_CONFIRM_DEL="Are you sure you want to REVOKE & DELETE? (y/n): "
         TXT_M6_DELETED="Certificate revoked and deleted."
-        
+        TXT_M6_HEADER_FIX="" # English doesn't need header fix
+
         # Shortcut
         TXT_SC_CREATE="Creating shortcut..."
         TXT_SC_ASK="Enter shortcut name (Default: ssl): "
-        TXT_SC_SUCCESS="Shortcut created! You can now run this script by typing: "
+        TXT_SC_SUCCESS="Shortcut created! Run command: "
         TXT_SC_EXIST="Shortcut already exists: "
         
         # Common
@@ -114,7 +114,7 @@ load_language_strings() {
         TXT_CONTINUE_ASK="Continue anyway? (y/n): "
         TXT_ISSUE_START="Starting Issue Process..."
         TXT_ISSUE_SUCCESS="Certificate Issued Successfully!"
-        TXT_ISSUE_FAIL="Issue Failed. Check logs."
+        TXT_ISSUE_FAIL="Issue Failed. Check logs above."
         
         # DNS
         TXT_DNS_SEL="Select DNS Provider:"
@@ -149,7 +149,7 @@ load_language_strings() {
 
     else
         # --- Chinese (Default) ---
-        TXT_TITLE="Acme-DNS-Super V1.0.0 | 证书管理大师"
+        TXT_TITLE="Acme-DNS-Super V0.0.1 | 证书管理大师"
         TXT_STATUS_LABEL="当前状态"
         TXT_EMAIL_LABEL="注册邮箱"
         TXT_NOT_SET="未设置"
@@ -165,7 +165,7 @@ load_language_strings() {
         TXT_M_7="卸载脚本"
         TXT_M_0="退出"
         
-        # Cert Manage Submenu
+        # Cert Manage
         TXT_M6_TITLE="证书管理列表"
         TXT_M6_RENEW="强制续期 (Force Renew)"
         TXT_M6_REVOKE="吊销并删除 (向 CA 吊销并清理本地文件)"
@@ -173,11 +173,14 @@ load_language_strings() {
         TXT_M6_INPUT_DEL="请输入要吊销的域名: "
         TXT_M6_CONFIRM_DEL="确认执行 [吊销+删除] 吗? (y/n): "
         TXT_M6_DELETED="证书已吊销并彻底删除。"
+        # 用于 sed 替换表头
+        TXT_M6_HEADER_ORIG="Main_Domain|KeyLength|SAN_Domains|Profile|CA|Created|Renew"
+        TXT_M6_HEADER_NEW="主域名|密钥长度|SAN域名|配置文件|CA机构|创建时间|续期时间"
         
         # Shortcut
         TXT_SC_CREATE="正在配置快捷启动..."
         TXT_SC_ASK="请输入快捷命令名称 (默认: ssl): "
-        TXT_SC_SUCCESS="快捷方式已创建！以后在终端输入以下命令即可运行："
+        TXT_SC_SUCCESS="快捷方式已创建！在终端输入以下命令即可运行："
         TXT_SC_EXIST="快捷方式已存在: "
 
         # Common
@@ -270,17 +273,12 @@ select_language_first() {
 setup_shortcut() {
     echo -e "${YELLOW}${TXT_SC_CREATE}${PLAIN}"
     
-    # 如果已有快捷方式，先清理
     if [ -n "$SHORTCUT_NAME" ] && [ -f "/usr/bin/$SHORTCUT_NAME" ]; then
         rm -f "/usr/bin/$SHORTCUT_NAME"
     fi
 
     read -p "${TXT_SC_ASK}" input_name
-    if [ -z "$input_name" ]; then
-        SHORTCUT_NAME="ssl"
-    else
-        SHORTCUT_NAME="$input_name"
-    fi
+    SHORTCUT_NAME=${input_name:-ssl}
 
     cat > "/usr/bin/$SHORTCUT_NAME" <<EOF
 #!/bin/bash
@@ -311,6 +309,7 @@ check_dependencies() {
         return 1
     fi
 
+    # Added 'socat' as it is critical for standalone mode
     local dependencies=(curl wget socat tar openssl cron)
     local missing_dep=false
 
@@ -324,18 +323,18 @@ check_dependencies() {
     if [ "$missing_dep" = true ]; then
         echo -e "${YELLOW}${TXT_MISSING_DEP}${PLAIN}"
         $update_cmd
+        for dep in "${dependencies[@]}"; do
+            if ! command -v $dep &> /dev/null; then
+                echo -e "${YELLOW}${TXT_INSTALLING_DEP}$dep ...${PLAIN}"
+                $install_cmd $dep
+            fi
+        done
     fi
-
-    for dep in "${dependencies[@]}"; do
-        if ! command -v $dep &> /dev/null; then
-            echo -e "${YELLOW}${TXT_INSTALLING_DEP}$dep ...${PLAIN}"
-            $install_cmd $dep
-        fi
-    done
     
+    # Ensure cron service is running
     if [[ -n $(command -v systemctl) ]]; then
         if ! systemctl is-active --quiet cron && ! systemctl is-active --quiet crond; then
-             systemctl start cron || systemctl start crond
+             systemctl start cron 2>/dev/null || systemctl start crond 2>/dev/null
         fi
     fi
 }
@@ -387,7 +386,6 @@ install_acme_sh() {
     "$ACME_SH" --upgrade --auto-upgrade
     save_config
     
-    # 引导创建快捷方式
     if [ -z "$SHORTCUT_NAME" ]; then
         setup_shortcut
     fi
@@ -464,7 +462,7 @@ issue_dns() {
     echo -e "0. Back"
     read -p "${TXT_SELECT}" DNS_OPT
 
-    # Clear ENV
+    # Clear ENV to prevent conflicts
     unset CF_Key CF_Email LUA_Key LUA_Email HE_Username HE_Password CLOUDNS_AUTH_ID CLOUDNS_SUB_AUTH_ID CLOUDNS_AUTH_PASSWORD PDNS_Url PDNS_ServerId PDNS_Token PDNS_Ttl One984_Username One984_Password DEDYN_TOKEN DYNV6_TOKEN
 
     local dns_type=""
@@ -660,7 +658,24 @@ manage_certs() {
     
     while true; do
         echo -e "${CYAN}===== ${TXT_M6_TITLE} =====${PLAIN}"
-        "$ACME_SH" --list
+        
+        # Capture output
+        local list_output=$("$ACME_SH" --list)
+        
+        # Replace header if Chinese mode is active
+        if [ "$LANG_SET" == "cn" ]; then
+            # Use sed to replace the specific header line
+            echo "$list_output" | sed "s/Main_Domain/主域名/g" | \
+            sed "s/KeyLength/密钥长度/g" | \
+            sed "s/SAN_Domains/SAN域名/g" | \
+            sed "s/Profile/配置名/g" | \
+            sed "s/CA/CA机构/g" | \
+            sed "s/Created/创建时间/g" | \
+            sed "s/Renew/续期时间/g"
+        else
+            echo "$list_output"
+        fi
+
         echo "------------------------"
         echo "1. ${TXT_M6_RENEW}"
         echo "2. ${TXT_M6_REVOKE}"
@@ -678,6 +693,7 @@ manage_certs() {
                     if [ "$c" == "y" ]; then
                         "$ACME_SH" --revoke -d "$d"
                         "$ACME_SH" --remove -d "$d"
+                        # Clean up folders
                         rm -rf "$ACME_DIR/$d" "$ACME_DIR/${d}_ecc"
                         echo -e "${GREEN}${TXT_M6_DELETED}${PLAIN}"
                     fi
