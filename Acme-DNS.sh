@@ -3,7 +3,7 @@
 # ==============================================================
 # Script Name: Acme-DNS-Super
 # Description: Advanced Acme.sh Manager (Bilingual & Shortcut Support)
-# Version: 0.0.1 (Strict Logic Release)
+# Version: 0.0.1 (Release)
 # By Prince 2025.10
 # ==============================================================
 
