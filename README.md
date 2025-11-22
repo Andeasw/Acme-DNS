@@ -1,413 +1,165 @@
-# Acme-DNS SSL Certificate Manager
+# Acme-DNS-Super 🔐
 
-A powerful and user-friendly Bash script for managing SSL certificates via `acme.sh` with DNS verification. Supports Debian/Ubuntu, Alpine Linux, and FreeBSD.
+**[English](#english) | [中文说明](#chinese)**
+
+A powerful, bilingual, and interactive Bash script wrapper for `acme.sh`. It simplifies SSL certificate issuance, installation, and management with a user-friendly menu interface.
+
+> **Current Version:** V1.0.0
+> **Core:** Based on the official [acme.sh](https://github.com/acmesh-official/acme.sh)
 
 ---
 
-## 🚀 Quick Start
+<a name="english"></a>
+## 🇬🇧 English Description
 
-### One-Click Launch (Recommended)
+### 🚀 Quick Start
+
+**One-Click Installation & Run:**
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/Andeasw/Acme-DNS/main/Acme-DNS.sh)
 ```
 
-### Quick Download & Run
+### ✨ Key Features
 
-```bash
-wget https://raw.githubusercontent.com/Andeasw/Acme-DNS/main/Acme-DNS.sh -O Acme-DNS.sh && chmod +x Acme-DNS.sh && ./Acme-DNS.sh
-```
+*   **🌍 Bilingual Support:** Fully localized in **English** and **Chinese** (Menus, Prompts, Errors).
+*   **⚡ Smart Initialization:**
+    *   Auto-installs dependencies (`curl`, `socat`, `cron`, etc.).
+    *   **Auto-registers accounts** for both **Let's Encrypt** and **ZeroSSL** simultaneously to prevent fallback errors.
+*   **🚀 Shortcut Command:** Automatically creates a global `ssl` command. You can launch the script anytime by just typing `ssl`.
+*   **🛡️ DNS API Modes:**
+    *   **8 Pre-configured Providers:** CloudFlare, LuaDNS, Hurricane Electric, ClouDNS, PowerDNS, 1984Hosting, deSEC.io, dynv6.
+    *   **🔧 Manual/Custom Mode:** Supports **ALL** acme.sh DNS plugins by allowing manual ENV variable input.
+*   **📜 Full Lifecycle Management:** Issue, Install (Deploy to Nginx/Apache path), Renew, and Revoke.
+*   **⚙️ Persisted Config:** Remembers your Email, Language, CA, and Key Type settings.
 
-#### OR using curl
+### 📖 Menu Guide
 
-```
-curl -fsSL -o Acme-DNS.sh https://raw.githubusercontent.com/Andeasw/Acme-DNS/main/Acme-DNS.sh && chmod +x Acme-DNS.sh && ./Acme-DNS.sh
-```
+After running the script, you will see the following interactive menu:
 
----
-
-## ⚡ One-Click Commands
-
-* **Quick Certificate Issue (existing config):**
-
-```bash
-./Acme-DNS.sh --quick
-```
-
-* **Issue Certificate (CloudFlare):**
-
-```bash
-DOMAIN="example.com" CF_Token="your_token" ./Acme-DNS.sh --issue
-```
-
-* **Issue Certificate (ClouDNS):**
-
-```bash
-DOMAIN="example.com" CLOUDNS_SUB_AUTH_ID="your_sub_auth_id" CLOUDNS_AUTH_PASSWORD="your_password" ./Acme-DNS.sh --issue
-```
-
-* **Wildcard Certificate:**
-
-```bash
-DOMAIN="example.com" WILDCARD_DOMAIN="*.example.com" CF_Token="your_token" ./Acme-DNS.sh --issue
-```
-
-* **Renew All Certificates:**
-
-```bash
-./Acme-DNS.sh --renew-all
-```
-
-* **List All Certificates:**
-
-```bash
-./Acme-DNS.sh --list
-```
+1.  **Init Environment:**
+    *   Checks/Installs dependencies.
+    *   Installs `acme.sh` (Official).
+    *   Registers ACME accounts.
+    *   Creates the `ssl` shortcut.
+    *   *Run this first!*
+2.  **System Settings:**
+    *   Change Registration Email.
+    *   Switch Language (English/Chinese).
+    *   Switch Default CA (Let's Encrypt / ZeroSSL).
+    *   Switch Key Type (RSA-2048, ECC-256, etc.).
+    *   Repair/Update Shortcut.
+3.  **Issue Cert - HTTP Mode:**
+    *   Standalone (Port 80), Nginx, Apache, or Webroot modes.
+    *   Best for single domains.
+4.  **Issue Cert - DNS API Mode:**
+    *   Supports Wildcard domains (`*.example.com`).
+    *   Select your provider or input custom ENV variables.
+5.  **Install Cert to Service:**
+    *   Copy certs to your specified paths (e.g., `/etc/nginx/ssl/`).
+    *   Set reload commands (e.g., `systemctl reload nginx`).
+6.  **Cert Maintenance:**
+    *   List all certificates.
+    *   **Force Renew** specific domains.
+    *   **Revoke & Delete** certificates completely.
+7.  **Uninstall:**
+    *   Remove config only OR Full uninstall (acme.sh + certs + script).
 
 ---
 
-## 🔐 Features
+<a name="chinese"></a>
+## 🇨🇳 中文说明
 
-* Automatic SSL issuance & renewal
-* Wildcard certificate support (`*.example.com`)
-* **8 DNS Providers**: CloudFlare, LuaDNS, Hurricane Electric, ClouDNS, PowerDNS, 1984Hosting, deSEC.io, dynv6
-* Dual ACME server support: Let's Encrypt, ZeroSSL
-* **Multi-key-type support**: RSA-2048 (default), RSA-4096, ECC-256, ECC-384, ECC-521
-* **Install & Auto-Renew**: Install certificates to custom paths with automatic renewal via cron or systemd
-* **DNS Propagation Display**: Real-time countdown display during DNS record propagation wait (120 seconds)
-* **Quick Startup**: Optional quick access command - just type `ssl` to launch the script from anywhere
-* Interactive menu with color-coded output
-* Step-by-step configuration wizard
-* Configuration save/load functionality
-* Post-installation script support (e.g., reload Nginx)
+### 🚀 快速开始
+
+**一键安装并运行：**
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Andeasw/Acme-DNS/main/Acme-DNS.sh)
+```
+
+### ✨ 核心功能
+
+*   **🌍 完美双语支持**：全界面支持 **中文** 和 **English** 切换，不再有语言障碍。
+*   **⚡ 智能初始化**：
+    *   自动检测并安装依赖 (`curl`, `socat`, `cron`, `openssl` 等)。
+    *   **双重账户注册**：初始化时自动同步注册 **Let's Encrypt** 和 **ZeroSSL** 账户，确保切换 CA 时无缝衔接。
+*   **🚀 快捷启动指令**：自动创建全局 `ssl` 命令。以后只需在终端输入 `ssl` 即可随时唤醒脚本。
+*   **🛡️ 强大的 DNS 支持**：
+    *   **8种预设服务商**：CloudFlare, LuaDNS, HE.net, ClouDNS, PowerDNS, 1984Hosting, deSEC.io, dynv6。
+    *   **🔧 通用/手动模式**：支持手动输入环境变量，从而兼容 acme.sh 支持的**所有** DNS 插件。
+*   **📜 全生命周期管理**：支持证书的 签发、安装 (部署到 Nginx/Apache)、续期 (Renew) 和 吊销 (Revoke)。
+*   **⚙️ 配置持久化**：自动保存您的 邮箱、语言偏好、默认 CA 和 密钥类型设置。
+
+### 📖 菜单功能详解
+
+运行脚本后，您将看到以下交互式菜单：
+
+1.  **环境初始化**：
+    *   核心步骤！安装依赖、acme.sh、注册账户并配置快捷键。
+    *   *首次使用请务必先执行此选项。*
+2.  **系统设置**：
+    *   修改注册邮箱。
+    *   切换语言 (中/英)。
+    *   切换默认 CA 厂商。
+    *   切换密钥规格 (RSA/ECC)。
+    *   修复快捷指令。
+3.  **签发证书 - HTTP 模式**：
+    *   支持 Standalone (占用80端口)、Nginx、Apache 自动配置或 Webroot 模式。
+    *   仅支持单域名。
+4.  **签发证书 - DNS API 模式**：
+    *   支持 **泛域名** (如 `*.example.com`)。
+    *   通过 API Key 验证域名所有权。
+    *   包含“手动输入环境变量”选项，可对接任意 DNS 服务商。
+5.  **部署证书到服务**：
+    *   将签发的证书安装到指定路径 (如 `/etc/nginx/ssl/`)。
+    *   配置重载命令 (如 `systemctl reload nginx`)，实现自动续期后重启服务。
+6.  **证书维护**：
+    *   查看证书列表。
+    *   **强制续期** 指定域名。
+    *   **吊销并删除** 证书 (清理残留文件)。
+7.  **卸载脚本**：
+    *   可选：仅清理脚本配置 或 彻底卸载 (移除 acme.sh 及所有证书)。
 
 ---
 
-## 🖥️ Supported Systems
+## 🌐 DNS Providers / DNS 服务商支持
 
-| OS            | Package Manager | Status             |
-| ------------- | --------------- | ------------------ |
-| Debian/Ubuntu | apt-get         | ✅ Fully Supported  |
-| Alpine Linux  | apk             | ✅ Fully Supported  |
-| FreeBSD       | pkg             | ✅ Fully Supported  |
-| CentOS/RHEL   | yum             | ⚠️ Limited Support |
+| Provider (服务商) | Auth Method (认证方式) | Notes (备注) |
+| :--- | :--- | :--- |
+| **CloudFlare** | Global API Key + Email | Most Popular / 最常用 |
+| **LuaDNS** | API Key + Email | |
+| **Hurricane Electric** | Username + Password | he.net |
+| **ClouDNS** | Auth ID + Password | Supports Sub-Auth ID |
+| **PowerDNS** | API URL + Token | For Self-hosted / 自建 DNS |
+| **1984Hosting** | Username + Password | Auto-caches token |
+| **deSEC.io** | API Token | Free dynDNS / 免费动态域名 |
+| **dynv6** | Token | Supports HTTP/SSH mode |
+| **Manual / Custom** | **ENV Key=Value** | **Supports ALL acme.sh plugins** <br> 支持所有插件 (阿里/腾讯/AWS等) |
 
----
+### 🔧 How to use Custom DNS (如何使用自定义 DNS)
 
-## 🌐 Supported DNS Providers
+Select **Option 9** in the DNS Menu. You can input any environment variable required by acme.sh plugins.
+选择 DNS 菜单中的 **选项 9**。您可以输入 acme.sh 插件所需的任意环境变量。
 
-| Provider                | Auth Method                               | Recommended | Notes                    |
-| ----------------------- | ----------------------------------------- | ----------- | ------------------------ |
-| CloudFlare              | API Token (recommended) or Global API Key | ✅           | Most popular             |
-| LuaDNS                  | API Key + Email                           | ✅           | Stable API               |
-| Hurricane Electric (HE) | Username + Password                       | ✅           | Account credentials      |
-| ClouDNS                 | Sub-Auth ID (recommended) or Auth ID      | ✅           | Limited access support   |
-| PowerDNS                | API URL + Token                           | ✅           | Self-hosted DNS          |
-| 1984Hosting             | Username + Password                       | ✅           | Login token cached       |
-| deSEC.io                | API Token                                 | ✅           | Free dynDNS service      |
-| dynv6                   | HTTP Token or SSH Key                     | ✅           | Dual authentication mode |
-
----
-
-## ⚙️ Configuration
-
-### Basic
-
-```bash
-DOMAIN="example.com"
-WILDCARD_DOMAIN="*.example.com"  # optional
-EMAIL="admin@example.com"
-CERT_PATH="/root/ssl/cert.pem"
-KEY_PATH="/root/ssl/private.key"
-KEY_TYPE="rsa-2048"  # Options: rsa-2048, rsa-4096, ec-256, ec-384, ec-521
-```
-
-### DNS Provider Examples
-
-#### CloudFlare (Recommended)
-```bash
-DNS_PROVIDER="cloudflare"
-CF_Token="your_api_token"      # Recommended
-CF_Zone_ID="your_zone_id"      # Optional
-```
-
-#### PowerDNS (Self-hosted)
-```bash
-DNS_PROVIDER="powerdns"
-PDNS_Url="http://ns.example.com:8081"
-PDNS_ServerId="localhost"      # Default: localhost
-PDNS_Token="your_api_token"
-PDNS_Ttl="60"                  # Default: 60 seconds
-```
-
-#### 1984Hosting (Website Login)
-```bash
-DNS_PROVIDER="1984hosting"
-One984HOSTING_Username="your_username"
-One984HOSTING_Password="your_password"
-# 初次登录后将自动缓存认证令牌到 ~/.acme.sh/account.conf
-```
-
-#### deSEC.io (Free dynDNS)
-```bash
-DNS_PROVIDER="desec"
-DEDYN_TOKEN="your_api_token"
-# Recommended: Limit token access by IP/CIDR in deSEC control panel
-```
-
-#### dynv6 (Dual Authentication)
-```bash
-DNS_PROVIDER="dynv6"
-# Option 1: HTTP REST API
-DYNV6_TOKEN="your_http_token"
-
-# Option 2: SSH API
-DYNV6_KEY="/path/to/ssh/keyfile"
-
-# If both are set, HTTP Token will be used
-```
-
-Other DNS providers (LuaDNS, HE, ClouDNS) follow similar environment variables.
-
-### Advanced
-
-```bash
-ACME_SERVER="letsencrypt"           # or "zerossl"
-POST_SCRIPT_CMD="systemctl reload nginx"
-POST_SCRIPT_ENABLED="true"
-```
+**Example (Aliyun / 阿里云):**
+1. Select Option 9.
+2. Input: `Ali_Key=sdfsdfsdfljlbjkljlkjsdfo`
+3. Input: `Ali_Secret=jlsdflanljkljlfdsaklkjflsa`
+4. Input: `end` (To finish input / 结束输入)
+5. Input Plugin Name: `dns_ali`
 
 ---
 
-## 🛠️ Common Commands
+## 🖥️ System Requirements / 系统要求
 
-```bash
-# Issue certificate
-./Acme-DNS.sh --issue
-
-# Issue certificate with specific key type
-KEY_TYPE="ec-256" DOMAIN="example.com" ./Acme-DNS.sh --issue
-
-# Install certificate to custom path with auto-renew
-./Acme-DNS.sh install -d example.com --key-type ec-256
-
-# Renew certificate
-./Acme-DNS.sh --renew
-
-# Renew all
-./Acme-DNS.sh --renew-all
-
-# List certificates
-./Acme-DNS.sh --list
-
-# Show certificate details
-./Acme-DNS.sh --show
-
-# Remove certificate
-./Acme-DNS.sh --remove
-
-# Uninstall acme.sh
-./Acme-DNS.sh --uninstall
-
-# Show configuration
-./Acme-DNS.sh --config
-
-# Help
-./Acme-DNS.sh --help
-```
-
-#### ✨ New Feature: Install & Auto-Renew (Option 6)
-
-This new menu option allows you to:
-
-* Select or input a domain name
-* Choose key type (RSA-2048/4096, ECC-256/384/521)
-* Specify custom installation paths for certificate files
-* Automatically configure cron-based renewal
-* Optionally set up systemd timer for renewal
-* View renewal schedule and next check time
-
-**Usage**: Simply select option `6` from the main menu and follow the prompts.
+*   **OS**: Debian/Ubuntu, CentOS/RHEL, Alpine Linux, FreeBSD.
+*   **Permissions**: Root access is required (`sudo -i`).
+*   **Dependencies**: `curl`, `openssl`, `socat`, `cron` (Script will try to auto-install them).
 
 ---
 
-## 💡 Tips & Security
+## 🤝 Contributing & Support
 
-* Use **Sub-Auth ID** for ClouDNS for limited access
-* Avoid using global API keys when possible
-* Keep strong passwords for all accounts
-* Wildcard certificates are fully supported
-* Configuration can be saved for quick future use:
-
-```bash
-./Acme-DNS.sh --quick
-```
-
----
-
-## 🖥️ System Requirements
-
-* OS: Debian 10+, Ubuntu 20.04+, Alpine 3.14+, FreeBSD 12+
-* Dependencies: `curl`, `openssl` (auto-installed)
-* Recommended: `socat`, `cron` (auto-installed if needed)
-* Bash v4.0+, ~100MB disk space
-
----
-
-## ⚠️ Troubleshooting
-
-* **Network:** `curl -I https://github.com`
-* **Permissions:** `chmod +x Acme-DNS.sh`
-* **Dependencies:**
-
-  * Debian/Ubuntu: `apt-get install curl openssl socat`
-  * Alpine: `apk add curl openssl socat`
-  * FreeBSD: `pkg install curl openssl socat`
-* **ClouDNS Auth:** Ensure correct Sub-Auth/Auth ID and password
-
----
-
-## 🔍 DNS Provider Special Cases & Solutions
-
-### PowerDNS
-**Special Requirements:**
-- Must have PowerDNS API enabled in configuration
-- API Token must be generated in PowerDNS admin panel
-- API URL should include port (usually 8081)
-
-**Reference:** https://doc.powerdns.com/md/httpapi/README/
-
-**Solution for API not accessible:**
-```bash
-# Check PowerDNS config file (pdns.conf or pdns.d/api.conf)
-api=yes
-api-key=your_secret_token
-webserver=yes
-webserver-address=0.0.0.0
-webserver-port=8081
-```
-
-### 1984Hosting
-**How It Works:**
-- 1984Hosting does **NOT** provide a traditional API
-- The acme.sh plugin logs into the 1984Hosting website to update DNS TXT records
-- Only username and password are required for initial authentication
-
-**Session Token Caching:**
-- After first successful login, 1984Hosting returns an auth token
-- This token is automatically saved in `~/.acme.sh/account.conf`
-- Future runs will reuse the cached token instead of username/password
-- The plugin will only ask for credentials if the token expires
-
-**Requirements:**
-- You must own the domain at 1984Hosting
-- Standard account (no special API access needed)
-- Username and password for the 1984Hosting website
-
-**Troubleshooting:**
-1. Verify your credentials are correct for https://1984.hosting/
-2. Ensure domain is registered and DNS is managed at 1984Hosting
-3. If login fails repeatedly, the cached token may have expired - provide credentials again
-4. Clear cached tokens if needed: `rm ~/.acme.sh/account.conf` (use with caution)
-
-**Reference:** https://github.com/acmesh-official/acme.sh/wiki/dnsapi#dns_1984hosting
-**Error Reporting:** https://github.com/acmesh-official/acme.sh/issues
-
-### deSEC.io
-**Special Requirements:**
-- Free dynDNS service, registration required at https://desec.io
-- API Token generated from account dashboard
-- Supports wildcard certificates
-
-**Security Best Practice:**
-- Limit token access by IP address/CIDR in deSEC control panel
-- Tokens can be regenerated if compromised
-
-**Common Issues:**
-- Ensure domain is registered in deSEC (not just DNS records)
-- Token must have full DNS management permissions
-
-**Error Reporting:** https://github.com/acmesh-official/acme.sh/issues
-
-### dynv6
-**Dual Authentication Modes:**
-
-**Mode 1: HTTP REST API (Recommended)**
-- Simpler setup, just needs HTTP token
-- Token can be generated from dynv6 website
-- Use `DYNV6_TOKEN` environment variable
-
-**Mode 2: SSH API**
-- Requires SSH key authentication
-- More secure but complex setup
-- Use `DYNV6_KEY` environment variable to specify key file path
-- If no key specified, acme.sh will generate one for you
-- Generated key must be added to dynv6 account
-
-**Priority:** If both HTTP Token and SSH Key are configured, HTTP Token takes precedence
-
-**SSH Key Setup:**
-```bash
-# Option 1: Use existing key
-export DYNV6_KEY="/path/to/your/private_key"
-
-# Option 2: Let acme.sh generate one
-# Key will be generated during first run
-# Add the public key to your dynv6 account at:
-# https://dynv6.com/keys
-```
-
-**Common Issues:**
-- Ensure at least one authentication method is configured
-- For SSH: public key must be registered in dynv6 account
-- For HTTP: token must be valid and not expired
-
-**Error Reporting:** https://github.com/acmesh-official/acme.sh/issues
-
----
-
-## 📝 Multi-CA Support & Fallback
-
-The script supports automatic fallback between multiple Certificate Authorities:
-
-**Default CA List:** `letsencrypt,zerossl`
-
-If the primary CA (Let's Encrypt) fails, the script automatically tries the next CA (ZeroSSL).
-
-**Customization:**
-```bash
-ACME_CA_LIST="letsencrypt,zerossl,buypass" ./Acme-DNS.sh --issue
-```
-
----
-
-## 🔧 Advanced Configuration
-
-### Network Tuning
-The script includes built-in network optimization for ACME operations:
-
-```bash
-ACME_CURL_CONNECT_TIMEOUT=5    # Connection timeout (seconds)
-ACME_CURL_MAX_TIME=40          # Maximum operation time (seconds)
-ACME_CURL_RETRIES=2            # Number of retries
-ACME_CURL_RETRY_DELAY=2        # Delay between retries (seconds)
-ACME_REGISTER_TIMEOUT=30       # Account registration timeout (seconds)
-```
-
-### Certificate Synchronization
-Automatically sync certificates to multiple locations:
-
-```bash
-CERT_SYNC_DIR="/etc/nginx/ssl"
-SERVICE_RELOAD_CMD="systemctl reload nginx"
-./Acme-DNS.sh --issue
-```
-
----
-
-## 🆘 Getting Help
-
-- **GitHub Issues:** https://github.com/Andeasw/Acme-DNS/issues
-- **acme.sh Documentation:** https://github.com/acmesh-official/acme.sh
-- **DNS Provider Docs:** See individual provider documentation for API setup
-
+*   **Issues**: Please verify with the official [acme.sh](https://github.com/acmesh-official/acme.sh) repository first if it's a certificate issuance error.
+*   **Updates**: Use Menu Option 2 -> 5 to upgrade acme.sh core.
