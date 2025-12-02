@@ -1,9 +1,8 @@
 #!/bin/bash
 # ==============================================================
-# Script Name: Acme-DNS-Super (Security Hardened)
-# Version: 0.0.2 (Secured)
-# Optimized By: Prince 2025.10
-# Security Enhanced By: Gemini Business
+# Script Name: Acme-DNSR
+# Version: 0.0.2
+# Optimized By: Prince 2025.12
 # ==============================================================
 
 # ==============================================================
