@@ -1,5 +1,11 @@
 #!/bin/bash
 
+# ==============================================================
+# Script Name: Acme-DNSR
+# Version: 0.0.2 (test)
+# Optimized By: Prince 2025.12
+# ==============================================================
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
@@ -27,7 +33,7 @@ _sec_init() {
 
 _sec_clean() {
     [ -f "$SEC_TMP" ] && rm -f "$SEC_TMP"
-    unset CF_Key CF_Email LUA_Key LUA_Email HE_Username HE_Password CLOUDNS_AUTH_ID CLOUDNS_SUB_AUTH_ID CLOUDNS_AUTH_PASSWORD PDNS_Url PDNS_ServerId PDNS_Token PDNS_Ttl One984_Username One984_Password DEDYN_TOKEN DYNV6_TOKEN
+    unset CF_Key CF_Email LUA_Key LUA_Email HE_Username HE_Password CLOUDNS_AUTH_ID CLOUDNS_SUB_AUTH_ID CLOUDNS_AUTH_PASSWORD PDNS_Url PDNS_ServerId PDNS_Token PDNS_Ttl One984_Username One984_Password DEDYN_TOKEN DYNV6_TOKEN Ali_Key Ali_Secret DP_Id DP_Key GD_Key GD_Secret AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY LINODE_API_KEY
 }
 
 _sec_load() {
@@ -42,6 +48,11 @@ _sec_load() {
     return 1
 }
 
+_strip_conf() {
+    local conf="$ACME_DIR/account.conf"
+    [ -f "$conf" ] && sed -i '/_Key=/d;/_Secret=/d;/_Password=/d;/_Token=/d' "$conf"
+}
+
 _cron_logic() {
     if [ ! -d "$ACME_DIR" ]; then exit 0; fi
     
@@ -50,15 +61,17 @@ _cron_logic() {
         [ "$domain" == "http.header" ] && continue
         
         cert_file="$d/$domain.cer"
+        if [ ! -f "$cert_file" ]; then cert_file="$d/${domain}.cer"; fi
         if [ ! -f "$cert_file" ]; then continue; fi
         
         if ! openssl x509 -checkend 864000 -noout -in "$cert_file" >/dev/null 2>&1; then
             if [ -f "$ENC_STORE" ]; then
-                _sec_load
-                "$ACME_SH" --renew -d "$domain" --force >/dev/null 2>&1
-                _sec_clean
+                if _sec_load; then
+                    "$ACME_SH" --renew -d "$domain" --force
+                    _sec_clean
+                fi
             else
-                "$ACME_SH" --renew -d "$domain" --force >/dev/null 2>&1
+                "$ACME_SH" --renew -d "$domain" --force
             fi
         fi
     done
@@ -93,8 +106,9 @@ EOF
 
 load_language_strings() {
     if [ "$LANG_SET" == "en" ]; then
-        TXT_TITLE="Acme-DNS-Super V0.0.2 | Cert Manager"
+        TXT_TITLE="Acme-DNS-Super V0.0.3 | Cert Manager"
         TXT_STATUS_LABEL="Status"
+        TXT_SEC_LABEL="Security"
         TXT_EMAIL_LABEL="Email"
         TXT_NOT_SET="Not Set"
         TXT_HINT_INSTALL=">> Warning: acme.sh is NOT installed. Please run [1] first. <<"
@@ -102,7 +116,7 @@ load_language_strings() {
         TXT_M_2="Settings (Language / CA / Key / Security)"
         TXT_M_3="Issue Cert - HTTP Mode (Single Domain)"
         TXT_M_4="Issue Cert - DNS API Mode (Wildcard Supported)"
-        TXT_M_5="Install Cert to Service (Nginx/Apache)"
+        TXT_M_5="Install/Deploy Cert (Nginx/Apache Hook)"
         TXT_M_6="Cert Maintenance (List / Renew / Revoke)"
         TXT_M_7="Uninstall Script"
         TXT_M_0="Exit"
@@ -140,18 +154,20 @@ load_language_strings() {
         TXT_PORT_80_WARN="Warning: Port 80 is in use."
         TXT_CONTINUE_ASK="Continue anyway? (y/n): "
         TXT_ISSUE_START="Starting..."
-        TXT_ISSUE_SUCCESS="Success!"
+        TXT_ISSUE_SUCCESS="Success! Now please use [Menu 5] to install cert to service."
         TXT_ISSUE_FAIL="Failed."
         TXT_DNS_SEL="Select DNS Provider:"
         TXT_DNS_MANUAL="Manual Input (ENV)"
         TXT_DNS_KEY="API Key: "
         TXT_DNS_EMAIL="Account Email: "
+        TXT_INS_TITLE="Install Cert to Service"
+        TXT_INS_DESC="This sets up the deployment hook. It runs now AND automatically after every future renewal."
         TXT_INS_DOMAIN="Enter Domain: "
-        TXT_INS_CERT_PATH="Cert Path: "
-        TXT_INS_KEY_PATH="Key Path: "
-        TXT_INS_CA_PATH="CA Path: "
-        TXT_INS_RELOAD="Reload Command: "
-        TXT_INS_SUCCESS="Installed!"
+        TXT_INS_CERT_PATH="Cert Path (e.g., /etc/nginx/ssl/cert.pem): "
+        TXT_INS_KEY_PATH="Key Path (e.g., /etc/nginx/ssl/key.pem): "
+        TXT_INS_CA_PATH="CA Path (e.g., /etc/nginx/ssl/fullchain.pem): "
+        TXT_INS_RELOAD="Reload Cmd (e.g., systemctl reload nginx): "
+        TXT_INS_SUCCESS="Installed! Hook saved for auto-renewal."
         TXT_SET_TITLE="Settings"
         TXT_SET_1="Change Email"
         TXT_SET_2="Change Language"
@@ -159,28 +175,29 @@ load_language_strings() {
         TXT_SET_4="Switch Key Type"
         TXT_SET_5="Upgrade acme.sh"
         TXT_SET_6="Update Shortcut"
-        TXT_SET_8="Security: Encrypt/Decrypt Local Keys"
+        TXT_SET_8="Security: Encrypt Local Keys (Toggle)"
         TXT_SET_UPDATED="Updated."
         TXT_UN_TITLE="Uninstall"
         TXT_UN_1="Remove Config"
         TXT_UN_2="Full Uninstall"
         TXT_UN_CONFIRM="Type 'DELETE' to confirm: "
         TXT_UN_DONE="Uninstalled."
-        TXT_SEC_ON="Encryption ENABLED. Cron job set (Daily 03:10)."
-        TXT_SEC_OFF="Encryption DISABLED. Cron job removed."
+        TXT_SEC_ON="Encryption ENABLED. acme.sh cron disabled. Custom cron (03:10) set."
+        TXT_SEC_OFF="Encryption DISABLED. Custom cron removed. acme.sh cron restored."
         TXT_SEC_FAIL="Encryption Failed."
         TXT_SEC_NO_KEYS="No keys found in environment to encrypt."
     else
-        TXT_TITLE="Acme-DNS-Super V0.0.2 | 证书管理大师"
-        TXT_STATUS_LABEL="当前状态"
-        TXT_EMAIL_LABEL="注册邮箱"
+        TXT_TITLE="Acme-DNS-Super V0.0.3 | 证书管理大师"
+        TXT_STATUS_LABEL="状态"
+        TXT_SEC_LABEL="安全模式"
+        TXT_EMAIL_LABEL="邮箱"
         TXT_NOT_SET="未设置"
         TXT_HINT_INSTALL=">> 警告：未安装 acme.sh，请先执行 [1] <<"
         TXT_M_1="环境初始化 (安装、注册、快捷键)"
         TXT_M_2="系统设置 (语言 / CA / 密钥 / 安全)"
         TXT_M_3="签发证书 - HTTP 模式"
         TXT_M_4="签发证书 - DNS API 模式"
-        TXT_M_5="部署证书 (Nginx/Apache)"
+        TXT_M_5="部署证书 (配置 Nginx/Apache 钩子)"
         TXT_M_6="证书维护 (列表 / 续期 / 吊销)"
         TXT_M_7="卸载脚本"
         TXT_M_0="退出"
@@ -218,18 +235,20 @@ load_language_strings() {
         TXT_PORT_80_WARN="80端口被占用。"
         TXT_CONTINUE_ASK="强制继续? (y/n): "
         TXT_ISSUE_START="开始签发..."
-        TXT_ISSUE_SUCCESS="签发成功！"
+        TXT_ISSUE_SUCCESS="签发成功！请务必使用 [菜单 5] 进行部署。"
         TXT_ISSUE_FAIL="签发失败。"
         TXT_DNS_SEL="选择DNS服务商:"
         TXT_DNS_MANUAL="手动输入 (ENV)"
         TXT_DNS_KEY="API Key: "
         TXT_DNS_EMAIL="Email: "
-        TXT_INS_DOMAIN="已签发域名: "
-        TXT_INS_CERT_PATH="Cert 路径: "
-        TXT_INS_KEY_PATH="Key 路径: "
-        TXT_INS_CA_PATH="CA 路径: "
-        TXT_INS_RELOAD="重载命令: "
-        TXT_INS_SUCCESS="部署成功！"
+        TXT_INS_TITLE="部署证书到服务"
+        TXT_INS_DESC="此操作将设置安装路径和重载命令，并永久保存用于自动续期。"
+        TXT_INS_DOMAIN="请输入域名: "
+        TXT_INS_CERT_PATH="Cert 路径 (例 /etc/nginx/ssl/cert.pem): "
+        TXT_INS_KEY_PATH="Key 路径 (例 /etc/nginx/ssl/key.pem): "
+        TXT_INS_CA_PATH="CA 路径 (例 /etc/nginx/ssl/fullchain.pem): "
+        TXT_INS_RELOAD="重载命令 (例 systemctl reload nginx): "
+        TXT_INS_SUCCESS="部署成功！钩子已保存。"
         TXT_SET_TITLE="系统设置"
         TXT_SET_1="修改邮箱"
         TXT_SET_2="切换语言"
@@ -237,17 +256,17 @@ load_language_strings() {
         TXT_SET_4="切换密钥类型"
         TXT_SET_5="更新 acme.sh"
         TXT_SET_6="更新快捷指令"
-        TXT_SET_8="安全: 加密/解密 本地密钥"
+        TXT_SET_8="安全: 开启/关闭 本地密钥加密"
         TXT_SET_UPDATED="已更新。"
         TXT_UN_TITLE="卸载选项"
         TXT_UN_1="仅删除配置"
         TXT_UN_2="彻底卸载"
         TXT_UN_CONFIRM="输入 'DELETE' 确认: "
         TXT_UN_DONE="已卸载。"
-        TXT_SEC_ON="加密已开启。系统Cron任务(03:10)已设置。"
-        TXT_SEC_OFF="加密已关闭。Cron任务已移除。"
+        TXT_SEC_ON="加密模式已开启。已禁用 acme.sh 自动续期，并设置每日 03:10 加密续期任务。"
+        TXT_SEC_OFF="加密模式已关闭。已移除加密任务，恢复 acme.sh 原生自动续期。"
         TXT_SEC_FAIL="加密失败。"
-        TXT_SEC_NO_KEYS="环境中未检测到API Key，无法加密。"
+        TXT_SEC_NO_KEYS="未检测到任何 Key，无法加密。"
     fi
 }
 
@@ -393,7 +412,6 @@ issue_http() {
     "$ACME_SH" --issue -d "$DOMAIN" $cmd_flags --keylength "$KEY_LENGTH" --server "$CA_SERVER"
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}${TXT_ISSUE_SUCCESS}${PLAIN}"
-        install_cert_menu "$DOMAIN"
     else
         echo -e "${RED}${TXT_ISSUE_FAIL}${PLAIN}"
     fi
@@ -416,10 +434,13 @@ issue_dns() {
     echo -e "6. 1984Hosting"
     echo -e "7. deSEC.io"
     echo -e "8. dynv6"
-    echo -e "9. ${TXT_DNS_MANUAL}"
+    echo -e "9. AliYun"
+    echo -e "10. ${TXT_DNS_MANUAL}"
     echo -e "0. Back"
     read -p "${TXT_SELECT}" DNS_OPT
-    unset CF_Key CF_Email LUA_Key LUA_Email HE_Username HE_Password CLOUDNS_AUTH_ID CLOUDNS_SUB_AUTH_ID CLOUDNS_AUTH_PASSWORD PDNS_Url PDNS_ServerId PDNS_Token PDNS_Ttl One984_Username One984_Password DEDYN_TOKEN DYNV6_TOKEN
+    
+    unset CF_Key CF_Email LUA_Key LUA_Email HE_Username HE_Password CLOUDNS_AUTH_ID CLOUDNS_SUB_AUTH_ID CLOUDNS_AUTH_PASSWORD PDNS_Url PDNS_ServerId PDNS_Token PDNS_Ttl One984_Username One984_Password DEDYN_TOKEN DYNV6_TOKEN Ali_Key Ali_Secret
+    
     local dns_type=""
     case $DNS_OPT in
         1)
@@ -481,53 +502,73 @@ issue_dns() {
             dns_type="dns_dynv6"
             ;;
         9)
+            read -p "AliYun Key: " Ali_Key
+            read -p "AliYun Secret: " Ali_Secret
+            export Ali_Key="$Ali_Key"
+            export Ali_Secret="$Ali_Secret"
+            dns_type="dns_ali"
+            ;;
+        10)
             echo -e "${YELLOW}ENV (Key=Value), type 'end' to finish.${PLAIN}"
             while true; do
                 read -p "ENV > " env_in
                 [[ "$env_in" == "end" ]] && break
                 export "$env_in"
             done
-            read -p "Plugin Name (e.g. dns_ali): " dns_type
+            read -p "Plugin Name (e.g. dns_dp): " dns_type
             ;;
         0) [ -f "$ENC_STORE" ] && _sec_clean; return ;;
         *) echo -e "${RED}${TXT_INVALID}${PLAIN}"; [ -f "$ENC_STORE" ] && _sec_clean; return ;;
     esac
     [ -z "$dns_type" ] && { [ -f "$ENC_STORE" ] && _sec_clean; return; }
+    
     echo -e "${CYAN}${TXT_ISSUE_START}${PLAIN}"
     "$ACME_SH" --issue --dns "$dns_type" -d "$DOMAIN" --keylength "$KEY_LENGTH" --server "$CA_SERVER"
+    
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}${TXT_ISSUE_SUCCESS}${PLAIN}"
-        install_cert_menu "$DOMAIN"
     else
         echo -e "${RED}${TXT_ISSUE_FAIL}${PLAIN}"
     fi
-    [ -f "$ENC_STORE" ] && _sec_clean
+    
+    if [ -f "$ENC_STORE" ]; then
+        _sec_clean
+        _strip_conf
+    fi
 }
 
 install_cert_menu() {
     if [ ! -f "$ACME_SH" ]; then echo -e "${RED}${TXT_WARN_NO_INIT}${PLAIN}"; return; fi
     local default_domain=$1
-    echo -e "${YELLOW}>>> Install Cert${PLAIN}"
+    echo -e "${CYAN}===== ${TXT_INS_TITLE} =====${PLAIN}"
+    echo -e "${YELLOW}${TXT_INS_DESC}${PLAIN}"
+    
     if [ -z "$default_domain" ]; then
         read -p "${TXT_INS_DOMAIN}" DOMAIN
     else
         DOMAIN=$default_domain
     fi
+    
     if [ ! -d "$ACME_DIR/$DOMAIN" ] && [ ! -d "$ACME_DIR/${DOMAIN}_ecc" ]; then
         echo -e "${RED}Error: Cert not found for $DOMAIN${PLAIN}"
         return
     fi
+    
     read -p "${TXT_INS_CERT_PATH}" CERT_PATH
     read -p "${TXT_INS_KEY_PATH}" KEY_PATH
     read -p "${TXT_INS_CA_PATH}" CA_PATH
     read -p "${TXT_INS_RELOAD}" RELOAD_CMD
+    
     local cmd_build="$ACME_SH --install-cert -d $DOMAIN"
     [[ "$KEY_LENGTH" == "ec"* ]] && cmd_build="$cmd_build --ecc"
     [ -n "$CERT_PATH" ] && cmd_build="$cmd_build --cert-file $CERT_PATH"
     [ -n "$KEY_PATH" ] && cmd_build="$cmd_build --key-file $KEY_PATH"
     [ -n "$CA_PATH" ] && cmd_build="$cmd_build --fullchain-file $CA_PATH"
     [ -n "$RELOAD_CMD" ] && cmd_build="$cmd_build --reloadcmd \"$RELOAD_CMD\""
+    
+    echo -e "${CYAN}Executing: $cmd_build${PLAIN}"
     eval "$cmd_build"
+    
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}${TXT_INS_SUCCESS}${PLAIN}"
     else
@@ -539,9 +580,9 @@ toggle_security() {
     if [ -f "$ENC_STORE" ]; then
         if _sec_load; then
             rm -f "$ENC_STORE" "$SEC_KEY"
-            _sec_clean
             crontab -l 2>/dev/null | grep -v "${SCRIPT_NAME} --cron-auto" | crontab -
             "$ACME_SH" --upgrade --auto-upgrade >/dev/null 2>&1
+            _sec_clean
             echo -e "${RED}${TXT_SEC_OFF}${PLAIN}"
         else
             echo -e "${RED}Decrypt failed.${PLAIN}"
@@ -549,22 +590,24 @@ toggle_security() {
     else
         _sec_init
         local dump=""
-        [ -n "$CF_Key" ] && dump="${dump}export CF_Key='${CF_Key}'\n"
-        [ -n "$CF_Email" ] && dump="${dump}export CF_Email='${CF_Email}'\n"
-        [ -n "$LUA_Key" ] && dump="${dump}export LUA_Key='${LUA_Key}'\n"
-        [ -n "$LUA_Email" ] && dump="${dump}export LUA_Email='${LUA_Email}'\n"
-        [ -n "$HE_Username" ] && dump="${dump}export HE_Username='${HE_Username}'\n"
-        [ -n "$HE_Password" ] && dump="${dump}export HE_Password='${HE_Password}'\n"
-        [ -n "$CLOUDNS_AUTH_ID" ] && dump="${dump}export CLOUDNS_AUTH_ID='${CLOUDNS_AUTH_ID}'\n"
-        [ -n "$CLOUDNS_SUB_AUTH_ID" ] && dump="${dump}export CLOUDNS_SUB_AUTH_ID='${CLOUDNS_SUB_AUTH_ID}'\n"
-        [ -n "$CLOUDNS_AUTH_PASSWORD" ] && dump="${dump}export CLOUDNS_AUTH_PASSWORD='${CLOUDNS_AUTH_PASSWORD}'\n"
-        [ -n "$PDNS_Url" ] && dump="${dump}export PDNS_Url='${PDNS_Url}'\n"
-        [ -n "$PDNS_ServerId" ] && dump="${dump}export PDNS_ServerId='${PDNS_ServerId}'\n"
-        [ -n "$PDNS_Token" ] && dump="${dump}export PDNS_Token='${PDNS_Token}'\n"
-        [ -n "$One984_Username" ] && dump="${dump}export One984_Username='${One984_Username}'\n"
-        [ -n "$One984_Password" ] && dump="${dump}export One984_Password='${One984_Password}'\n"
-        [ -n "$DEDYN_TOKEN" ] && dump="${dump}export DEDYN_TOKEN='${DEDYN_TOKEN}'\n"
-        [ -n "$DYNV6_TOKEN" ] && dump="${dump}export DYNV6_TOKEN='${DYNV6_TOKEN}'\n"
+        local vars_to_check="CF_Key CF_Email LUA_Key LUA_Email HE_Username HE_Password CLOUDNS_AUTH_ID CLOUDNS_SUB_AUTH_ID CLOUDNS_AUTH_PASSWORD PDNS_Url PDNS_ServerId PDNS_Token PDNS_Ttl One984_Username One984_Password DEDYN_TOKEN DYNV6_TOKEN Ali_Key Ali_Secret DP_Id DP_Key GD_Key GD_Secret AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY LINODE_API_KEY"
+        
+        if [ -f "$ACME_DIR/account.conf" ]; then
+             while IFS='=' read -r k v; do
+                key_clean=$(echo "$k" | tr -d " '\"")
+                val_clean=$(echo "$v" | tr -d " '\"")
+                if [[ $vars_to_check == *"$key_clean"* ]] && [ -n "$val_clean" ]; then
+                    export "$key_clean"="$val_clean"
+                fi
+            done < "$ACME_DIR/account.conf"
+        fi
+
+        for v in $vars_to_check; do
+            val="${!v}"
+            if [ -n "$val" ]; then
+                dump="${dump}export $v='$val'\n"
+            fi
+        done
 
         if [ -z "$dump" ]; then
             echo -e "${YELLOW}${TXT_SEC_NO_KEYS}${PLAIN}"
@@ -574,9 +617,11 @@ toggle_security() {
         echo -e "$dump" | openssl enc -aes-256-cbc -salt -pbkdf2 -pass file:"$SEC_KEY" -out "$ENC_STORE"
         if [ $? -eq 0 ]; then
             chmod 600 "$ENC_STORE"
+            _strip_conf
             local job="10 3 * * * /bin/bash ${SCRIPT_PATH} --cron-auto"
             (crontab -l 2>/dev/null | grep -v "${SCRIPT_NAME} --cron-auto"; echo "$job") | crontab -
             "$ACME_SH" --upgrade --auto-upgrade 0 >/dev/null 2>&1
+            _sec_clean
             echo -e "${GREEN}${TXT_SEC_ON}${PLAIN}"
         else
             echo -e "${RED}${TXT_SEC_FAIL}${PLAIN}"
@@ -665,7 +710,7 @@ manage_certs() {
                 if [ -n "$d" ]; then
                     [ -f "$ENC_STORE" ] && _sec_load
                     "$ACME_SH" --renew -d "$d" --force
-                    [ -f "$ENC_STORE" ] && _sec_clean
+                    if [ -f "$ENC_STORE" ]; then _sec_clean; _strip_conf; fi
                 fi
                 ;;
             2)
@@ -718,7 +763,7 @@ show_menu() {
     echo -e "${TXT_STATUS_LABEL}: CA: ${GREEN}${CA_SERVER}${PLAIN} | Key: ${GREEN}${KEY_LENGTH}${PLAIN} | ${TXT_EMAIL_LABEL}: ${GREEN}${USER_EMAIL:-${TXT_NOT_SET}}${PLAIN}"
     echo -e "${BLUE}--------------------------------------------------------------${PLAIN}"
     if [ ! -f "$ACME_SH" ]; then echo -e "${RED}${TXT_HINT_INSTALL}${PLAIN}"; fi
-    if [ -f "$ENC_STORE" ]; then echo -e "Sec: ${GREEN}Encrypted${PLAIN}"; else echo -e "Sec: ${YELLOW}Plain${PLAIN}"; fi
+    if [ -f "$ENC_STORE" ]; then echo -e "${TXT_SEC_LABEL}: ${GREEN}ON (Encrypted)${PLAIN}"; else echo -e "${TXT_SEC_LABEL}: ${YELLOW}OFF (Standard)${PLAIN}"; fi
     echo -e " 1. ${TXT_M_1}"
     echo -e " 2. ${TXT_M_2}"
     echo -e "--------------------------------------------------------------"
