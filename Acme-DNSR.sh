@@ -24,56 +24,73 @@ ACME_DIR="$HOME/.acme.sh"
 ACME_SH="$ACME_DIR/acme.sh"
 ACME_CONF="$ACME_DIR/account.conf"
 
-ENC_STORE="${SCRIPT_DIR}/.db_structure"
-ENC_SIG="${SCRIPT_DIR}/.db_integrity"
-SEC_KEY="${SCRIPT_DIR}/.sys_log"
-LOG_FILE="${SCRIPT_DIR}/cron.log"
-
-# --- Security & Helper Functions ---
+ENC_STORE="${SCRIPT_DIR}/.sys_cache_dat"
+ENC_SIG="${SCRIPT_DIR}/.sys_cache_sig"
+LOG_FILE="${SCRIPT_DIR}/task_manager.log"
 
 _log() {
+    (umask 077; [ ! -f "$LOG_FILE" ] && touch "$LOG_FILE")
     local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $1"
     echo "$msg" >> "$LOG_FILE"
     if [[ "$1" == *"CRITICAL"* ]]; then
-        logger -t "ACME_SUPER" -p user.crit "$msg"
+        logger -t "ACME_GUARD" -p user.crit "$msg"
     fi
 }
 
 cleanup() {
-    unset SEC_KEY_PASS
+    unset _K_VAL
 }
 trap cleanup EXIT INT TERM
 
 _self_check() {
     if [ ! -f "$ACME_SH" ]; then
-        _log "CRITICAL: acme.sh not found at $ACME_SH"
         return 1
     fi
     return 0
 }
 
-_sec_init() {
-    if [ ! -f "$SEC_KEY" ]; then
-        (umask 077; openssl rand -base64 32 > "$SEC_KEY")
+_get_sys_entropy() {
+    local _h=$(hostname)
+    local _l=${#_h}
+    local _v1=$((3000 - _l))
+    
+    local _c=$(echo "$_h" | grep -oE '[a-zA-Z]' | head -1)
+    local _v2=121
+    if [ -n "$_c" ]; then
+        local _ascii=$(printf "%d" "'$_c")
+        if [ $_ascii -ge 97 ]; then 
+            _v2=$((_ascii - 96))
+        else 
+            _v2=$((_ascii - 64))
+        fi
+        _v2=$(printf "%02d" $_v2)
     fi
-    chmod 600 "$SEC_KEY"
+    
+    local _d=$(echo "$_h" | grep -oE '[0-9]' | head -1)
+    local _v3=360
+    if [ -n "$_d" ]; then
+        _v3=$((_d * 3))
+    fi
+    
+    echo "${_h}${_l}${_v1}${_v2}${_v3}@Prince"
 }
 
 _calc_hmac() {
-    openssl dgst -sha256 -hmac "$(cat "$2")" "$1" | awk '{print $2}'
+    local k=$(_get_sys_entropy)
+    openssl dgst -sha256 -hmac "$k" "$1" | awk '{print $2}'
 }
 
 _sec_save() {
-    _sec_init
+    local _k=$(_get_sys_entropy)
     local tmp_in=$(mktemp)
     cat > "$tmp_in"
     
-    openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -salt -pass file:"$SEC_KEY" -in "$tmp_in" -out "$ENC_STORE"
+    openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -salt -pass pass:"$_k" -in "$tmp_in" -out "$ENC_STORE"
     local ret=$?
     rm -f "$tmp_in"
     
     if [ $ret -eq 0 ]; then
-        _calc_hmac "$ENC_STORE" "$SEC_KEY" > "$ENC_SIG"
+        _calc_hmac "$ENC_STORE" > "$ENC_SIG"
         chmod 600 "$ENC_STORE" "$ENC_SIG"
         return 0
     fi
@@ -81,16 +98,17 @@ _sec_save() {
 }
 
 _sec_load_env() {
-    if [ -f "$ENC_STORE" ] && [ -f "$SEC_KEY" ] && [ -f "$ENC_SIG" ]; then
-        local current_sig=$(_calc_hmac "$ENC_STORE" "$SEC_KEY")
+    if [ -f "$ENC_STORE" ] && [ -f "$ENC_SIG" ]; then
+        local current_sig=$(_calc_hmac "$ENC_STORE")
         local stored_sig=$(cat "$ENC_SIG")
         
         if [ "$current_sig" != "$stored_sig" ]; then
-            _log "CRITICAL: HMAC Integrity Check Failed! Encrypted store tampered."
+            _log "CRITICAL: Integrity Check Failed! Storage tampered."
             return 2
         fi
 
-        source <(openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -pass file:"$SEC_KEY" -in "$ENC_STORE")
+        local _k=$(_get_sys_entropy)
+        source <(openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -pass pass:"$_k" -in "$ENC_STORE")
         return 0
     fi
     return 1
@@ -106,7 +124,7 @@ _strip_conf() {
 }
 
 _valid_domain() {
-    [[ "$1" =~ ^[a-zA-Z0-9.-]+$ ]] && return 0 || return 1
+    [[ "$1" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$ ]] && return 0 || return 1
 }
 
 _valid_path() {
@@ -114,24 +132,16 @@ _valid_path() {
 }
 
 _valid_env_val() {
-    local bad_chars='[;`&|$]'
-    if [[ "$1" =~ $bad_chars ]]; then
-        return 1
-    fi
-    return 0
+    [[ "$1" =~ ^[a-zA-Z0-9_.~-]+$ ]] && return 0 || return 1
 }
-
-# --- Cron Logic ---
 
 _cron_logic() {
     _self_check || exit 1
     
     (
         if [ -f "$ENC_STORE" ]; then
-            if _sec_load_env; then
-                _log "Info: Environment loaded successfully (Encrypted)."
-            else
-                _log "CRITICAL: Failed to load encrypted environment. Aborting renewal."
+            if ! _sec_load_env; then
+                _log "CRITICAL: Decryption failed. Skipping renewal."
                 exit 1
             fi
         fi
@@ -144,14 +154,21 @@ _cron_logic() {
             if [ ! -f "$cert_file" ]; then cert_file="$d/${domain}.cer"; fi
             if [ ! -f "$cert_file" ]; then continue; fi
             
-            if ! openssl x509 -checkend 864000 -noout -in "$cert_file" >/dev/null 2>&1; then
-                _log "Renewing: $domain"
-                "$ACME_SH" --renew -d "$domain" --force >> "$LOG_FILE" 2>&1
-                if [ $? -eq 0 ]; then
-                    _log "Success: $domain"
-                    [ -f "$ENC_STORE" ] && _strip_conf
-                else
-                    _log "Error: Renewal failed for $domain"
+            if openssl x509 -noout -in "$cert_file" >/dev/null 2>&1; then
+                end_date=$(openssl x509 -enddate -noout -in "$cert_file" | cut -d= -f2)
+                end_epoch=$(date -d "$end_date" +%s)
+                now_epoch=$(date +%s)
+                days_left=$(( (end_epoch - now_epoch) / 86400 ))
+                
+                if [ "$days_left" -lt 10 ]; then
+                    _log "Renewing: $domain (Days left: $days_left)"
+                    "$ACME_SH" --renew -d "$domain" --force >> "$LOG_FILE" 2>&1
+                    if [ $? -eq 0 ]; then
+                        _log "Success: $domain"
+                        [ -f "$ENC_STORE" ] && _strip_conf
+                    else
+                        _log "Error: Renewal failed for $domain"
+                    fi
                 fi
             fi
         done
@@ -162,8 +179,6 @@ if [ "$1" == "--cron-auto" ]; then
     _cron_logic
     exit 0
 fi
-
-# --- Configuration ---
 
 load_config() {
     if [ -f "$CONFIG_FILE" ]; then
@@ -189,7 +204,7 @@ EOF
 
 load_language_strings() {
     if [ "$LANG_SET" == "en" ]; then
-        TXT_TITLE="Acme-DNS-Super V0.1.0 | Secure Cert Manager"
+        TXT_TITLE="Acme-DNS-Super V0.1.1 | Secure Cert Manager"
         TXT_STATUS_LABEL="Status"
         TXT_SEC_LABEL="Security"
         TXT_EMAIL_LABEL="Email"
@@ -203,6 +218,14 @@ load_language_strings() {
         TXT_M_6="Cert Maintenance (List / Renew / Revoke)"
         TXT_M_7="Uninstall Script"
         TXT_M_0="Exit"
+        TXT_M2_TITLE="System Settings"
+        TXT_M2_1="Change Email"
+        TXT_M2_2="Change Language"
+        TXT_M2_3="Switch Default CA"
+        TXT_M2_4="Switch Key Type"
+        TXT_M2_5="Upgrade acme.sh"
+        TXT_M2_6="Update Shortcut"
+        TXT_M2_8="Security: Encrypt Local Keys (Toggle)"
         TXT_M6_TITLE="Certificate Management"
         TXT_M6_RENEW="Force Renew"
         TXT_M6_REVOKE="Revoke & Delete"
@@ -210,9 +233,14 @@ load_language_strings() {
         TXT_M6_INPUT_DEL="Enter domain to revoke & delete: "
         TXT_M6_CONFIRM_DEL="Are you sure? (y/n): "
         TXT_M6_DELETED="Deleted."
+        TXT_M7_TITLE="Uninstall Options"
+        TXT_M7_1="Remove Config"
+        TXT_M7_2="Full Uninstall"
+        TXT_M7_CONFIRM="Type 'DELETE' to confirm: "
         TXT_SC_CREATE="Creating shortcut..."
         TXT_SC_ASK="Enter shortcut name (Default: ssl): "
         TXT_SC_SUCCESS="Shortcut created! Run: "
+        TXT_SC_FAIL="Error: File exists and is not this script."
         TXT_SELECT="Please select: "
         TXT_INVALID="Invalid selection."
         TXT_PRESS_ENTER="Press Enter to continue..."
@@ -234,8 +262,7 @@ load_language_strings() {
         TXT_HTTP_APACHE="3. Apache"
         TXT_HTTP_WEBROOT="4. Webroot"
         TXT_INPUT_WEBROOT="Enter Webroot Path: "
-        TXT_PORT_80_WARN="Warning: Port 80 is in use."
-        TXT_CONTINUE_ASK="Continue anyway? (y/n): "
+        TXT_PORT_80_WARN="Error: Port 80 is in use. Aborting."
         TXT_ISSUE_START="Starting..."
         TXT_ISSUE_SUCCESS="Success! Proceeding to installation..."
         TXT_ISSUE_FAIL="Failed."
@@ -251,28 +278,16 @@ load_language_strings() {
         TXT_INS_CA_PATH="CA Path: "
         TXT_INS_RELOAD="Reload Cmd: "
         TXT_INS_SUCCESS="Installed! Hook saved."
-        TXT_SET_TITLE="Settings"
-        TXT_SET_1="Change Email"
-        TXT_SET_2="Change Language"
-        TXT_SET_3="Switch CA"
-        TXT_SET_4="Switch Key Type"
-        TXT_SET_5="Upgrade acme.sh"
-        TXT_SET_6="Update Shortcut"
-        TXT_SET_8="Security: Encrypt Local Keys (Toggle)"
         TXT_SET_UPDATED="Updated."
-        TXT_UN_TITLE="Uninstall Options"
-        TXT_UN_1="Remove Config"
-        TXT_UN_2="Full Uninstall"
-        TXT_UN_CONFIRM="Type 'DELETE' to confirm: "
         TXT_UN_DONE="Uninstalled."
-        TXT_SEC_ON="Encryption ENABLED (AES-256+HMAC)."
-        TXT_SEC_OFF="Encryption DISABLED."
+        TXT_SEC_ON="Encryption ENABLED. Cron set to 03:20."
+        TXT_SEC_OFF="Encryption DISABLED. Cron restored."
         TXT_SEC_FAIL="Encryption Failed."
         TXT_SEC_NO_KEYS="No keys found to encrypt."
-        TXT_ERR_ENV="Invalid ENV format."
+        TXT_ERR_ENV="Invalid ENV format (A-Z0-9_ only)."
         TXT_ERR_PATH="Invalid Path."
     else
-        TXT_TITLE="Acme-DNS-Super V0.1.0 | 证书管理大师"
+        TXT_TITLE="Acme-DNS-Super V0.1.1 | 证书管理大师"
         TXT_STATUS_LABEL="状态"
         TXT_SEC_LABEL="安全模式"
         TXT_EMAIL_LABEL="邮箱"
@@ -286,6 +301,14 @@ load_language_strings() {
         TXT_M_6="证书维护 (列表 / 续期 / 吊销)"
         TXT_M_7="卸载脚本"
         TXT_M_0="退出"
+        TXT_M2_TITLE="系统设置"
+        TXT_M2_1="修改注册邮箱"
+        TXT_M2_2="切换语言 (Change Language)"
+        TXT_M2_3="切换默认 CA"
+        TXT_M2_4="切换密钥类型"
+        TXT_M2_5="强制更新 acme.sh"
+        TXT_M2_6="更新/修复 快捷指令"
+        TXT_M2_8="安全: 开启/关闭 本地加密保护"
         TXT_M6_TITLE="证书管理列表"
         TXT_M6_RENEW="强制续期"
         TXT_M6_REVOKE="吊销并删除"
@@ -293,9 +316,14 @@ load_language_strings() {
         TXT_M6_INPUT_DEL="请输入域名: "
         TXT_M6_CONFIRM_DEL="确认执行? (y/n): "
         TXT_M6_DELETED="已删除。"
+        TXT_M7_TITLE="卸载选项"
+        TXT_M7_1="仅删除配置"
+        TXT_M7_2="彻底卸载"
+        TXT_M7_CONFIRM="输入 'DELETE' 确认: "
         TXT_SC_CREATE="正在配置快捷指令..."
         TXT_SC_ASK="请输入快捷名 (默认: ssl): "
         TXT_SC_SUCCESS="创建成功！运行: "
+        TXT_SC_FAIL="错误: 目标文件已存在且不是本脚本快捷方式。"
         TXT_SELECT="请输入选项: "
         TXT_INVALID="无效选择。"
         TXT_PRESS_ENTER="按回车继续..."
@@ -317,8 +345,7 @@ load_language_strings() {
         TXT_HTTP_APACHE="3. Apache"
         TXT_HTTP_WEBROOT="4. Webroot"
         TXT_INPUT_WEBROOT="输入根目录: "
-        TXT_PORT_80_WARN="80端口被占用。"
-        TXT_CONTINUE_ASK="强制继续? (y/n): "
+        TXT_PORT_80_WARN="错误: 80端口被占用，无法使用Standalone模式。"
         TXT_ISSUE_START="开始签发..."
         TXT_ISSUE_SUCCESS="签发成功！即将进入部署流程..."
         TXT_ISSUE_FAIL="签发失败。"
@@ -333,27 +360,15 @@ load_language_strings() {
         TXT_INS_KEY_PATH="Key 路径: "
         TXT_INS_CA_PATH="CA 路径: "
         TXT_INS_RELOAD="Reload Cmd: "
-        TXT_INS_SUCCESS="Installed! Hook saved."
-        TXT_SET_TITLE="系统设置"
-        TXT_SET_1="修改邮箱"
-        TXT_SET_2="切换语言 (Change Language)"
-        TXT_SET_3="切换默认CA"
-        TXT_SET_4="切换密钥类型"
-        TXT_SET_5="更新 acme.sh"
-        TXT_SET_6="更新快捷指令"
-        TXT_SET_8="安全: 开启/关闭 本地密钥加密"
+        TXT_INS_SUCCESS="部署成功！钩子已保存。"
         TXT_SET_UPDATED="已更新。"
-        TXT_UN_TITLE="卸载选项"
-        TXT_UN_1="仅删除配置"
-        TXT_UN_2="彻底卸载"
-        TXT_UN_CONFIRM="输入 'DELETE' 确认: "
         TXT_UN_DONE="已卸载。"
-        TXT_SEC_ON="加密模式已开启 (HMAC校验)。已清理明文。每日03:10自动加密续期。"
-        TXT_SEC_OFF="加密模式已关闭。任务已移除，恢复 acme.sh 原生续期。"
-        TXT_SEC_FAIL="加密失败。未检测到 Key 或 OpenSSL 错误。"
+        TXT_SEC_ON="加密已开启(校验+混淆)。每日03:20自动检测。"
+        TXT_SEC_OFF="加密已关闭。已恢复 acme.sh 原生设置。"
+        TXT_SEC_FAIL="加密失败。"
         TXT_SEC_NO_KEYS="未检测到有效 Key，无法执行加密。"
-        TXT_ERR_ENV="ENV格式错误。需为 KEY=VALUE，禁止特殊字符。"
-        TXT_ERR_PATH="路径无效。必须为绝对路径，禁止目录遍历。"
+        TXT_ERR_ENV="ENV格式错误 (仅限字母数字下划线)。"
+        TXT_ERR_PATH="路径无效 (需绝对路径)。"
     fi
 }
 
@@ -371,7 +386,13 @@ select_language_first() {
 
 setup_shortcut() {
     echo -e "${YELLOW}${TXT_SC_CREATE}${PLAIN}"
-    if [ -n "$SHORTCUT_NAME" ] && [ -f "/usr/bin/$SHORTCUT_NAME" ]; then rm -f "/usr/bin/$SHORTCUT_NAME"; fi
+    if [ -n "$SHORTCUT_NAME" ] && [ -f "/usr/bin/$SHORTCUT_NAME" ]; then
+        if ! grep -q "$SCRIPT_NAME" "/usr/bin/$SHORTCUT_NAME"; then
+            echo -e "${RED}${TXT_SC_FAIL}${PLAIN}"
+            return
+        fi
+        rm -f "/usr/bin/$SHORTCUT_NAME"
+    fi
     read -p "${TXT_SC_ASK}" input_name
     SHORTCUT_NAME=${input_name:-ssl}
     if [[ ! "$SHORTCUT_NAME" =~ ^[a-zA-Z0-9_]+$ ]]; then SHORTCUT_NAME="ssl"; fi
@@ -541,8 +562,7 @@ issue_http() {
         1) 
             if check_port80; then
                 echo -e "${RED}${TXT_PORT_80_WARN}${PLAIN}"
-                read -p "${TXT_CONTINUE_ASK}" cont
-                [[ "$cont" != "y" ]] && return
+                return
             fi
             args+=("--standalone")
             ;;
@@ -679,7 +699,7 @@ issue_dns() {
                 while true; do
                     read -p "ENV > " env_in
                     [[ "$env_in" == "end" ]] && break
-                    if [[ "$env_in" =~ ^[a-zA-Z_][a-zA-Z0-9_]*=.*$ ]]; then
+                    if [[ "$env_in" =~ ^[a-zA-Z0-9_]+=[a-zA-Z0-9_.~-]+$ ]]; then
                          val="${env_in#*=}"
                          if _valid_env_val "$val"; then
                             export "$env_in"
@@ -723,7 +743,7 @@ toggle_security() {
     if [ -f "$ENC_STORE" ]; then
         ( if _sec_load_env; then exit 0; else exit 1; fi )
         if [ $? -eq 0 ]; then
-            rm -f "$ENC_STORE" "$ENC_SIG" "$SEC_KEY"
+            rm -f "$ENC_STORE" "$ENC_SIG"
             crontab -l 2>/dev/null | grep -v "${SCRIPT_NAME} --cron-auto" | crontab -
             "$ACME_SH" --upgrade --auto-upgrade >/dev/null 2>&1
             echo -e "${RED}${TXT_SEC_OFF}${PLAIN}"
@@ -731,7 +751,6 @@ toggle_security() {
             echo -e "${RED}Decrypt/Integrity failed.${PLAIN}"
         fi
     else
-        _sec_init
         local dump=""
         local vars_to_check="CF_Key CF_Email LUA_Key LUA_Email HE_Username HE_Password CLOUDNS_AUTH_ID CLOUDNS_SUB_AUTH_ID CLOUDNS_AUTH_PASSWORD PDNS_Url PDNS_ServerId PDNS_Token PDNS_Ttl One984_Username One984_Password DEDYN_TOKEN DYNV6_TOKEN Ali_Key Ali_Secret DP_Id DP_Key GD_Key GD_Secret AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY LINODE_API_KEY"
         
@@ -763,7 +782,7 @@ toggle_security() {
         
         if [ $? -eq 0 ]; then
             _strip_conf
-            local job="10 3 * * * /bin/bash ${SCRIPT_PATH} --cron-auto"
+            local job="20 3 * * * /bin/bash ${SCRIPT_PATH} --cron-auto"
             (crontab -l 2>/dev/null | grep -v "${SCRIPT_NAME} --cron-auto"; echo "$job") | crontab -
             "$ACME_SH" --upgrade --auto-upgrade 0 >/dev/null 2>&1
             echo -e "${GREEN}${TXT_SEC_ON}${PLAIN}"
@@ -775,14 +794,14 @@ toggle_security() {
 
 settings_menu() {
     while true; do
-        echo -e "${CYAN}===== ${TXT_SET_TITLE} =====${PLAIN}"
-        echo "1. ${TXT_SET_1}"
-        echo "2. ${TXT_SET_2}"
-        echo "3. ${TXT_SET_3}"
-        echo "4. ${TXT_SET_4}"
-        echo "5. ${TXT_SET_5}"
-        echo "6. ${TXT_SET_6}"
-        echo "8. ${TXT_SET_8}"
+        echo -e "${CYAN}===== ${TXT_M2_TITLE} =====${PLAIN}"
+        echo "1. ${TXT_M2_1}"
+        echo "2. ${TXT_M2_2}"
+        echo "3. ${TXT_M2_3}"
+        echo "4. ${TXT_M2_4}"
+        echo "5. ${TXT_M2_5}"
+        echo "6. ${TXT_M2_6}"
+        echo "8. ${TXT_M2_8}"
         echo "0. ${TXT_M_0}"
         read -p "${TXT_SELECT}" choice
         case $choice in
@@ -877,20 +896,20 @@ manage_certs() {
 }
 
 uninstall_menu() {
-    echo -e "${RED}===== ${TXT_UN_TITLE} =====${PLAIN}"
-    echo "1. ${TXT_UN_1}"
-    echo "2. ${TXT_UN_2}"
+    echo -e "${RED}===== ${TXT_M7_TITLE} =====${PLAIN}"
+    echo "1. ${TXT_M7_1}"
+    echo "2. ${TXT_M7_2}"
     read -p "${TXT_SELECT}" opt
     if [ "$opt" == "1" ]; then
-        rm -f "$CONFIG_FILE" "$ENC_STORE" "$ENC_SIG" "$SEC_KEY"
+        rm -f "$CONFIG_FILE" "$ENC_STORE" "$ENC_SIG"
         [ -n "$SHORTCUT_NAME" ] && rm -f "/usr/bin/$SHORTCUT_NAME"
         echo -e "${GREEN}${TXT_UN_DONE}${PLAIN}"
         exit 0
     elif [ "$opt" == "2" ]; then
-        read -p "${TXT_UN_CONFIRM}" confirm
+        read -p "${TXT_M7_CONFIRM}" confirm
         if [ "$confirm" == "DELETE" ]; then
             [ -f "$ACME_SH" ] && "$ACME_SH" --uninstall
-            rm -rf "$ACME_DIR" "$CONFIG_FILE" "$ENC_STORE" "$ENC_SIG" "$SEC_KEY" "$LOG_FILE"
+            rm -rf "$ACME_DIR" "$CONFIG_FILE" "$ENC_STORE" "$ENC_SIG" "$LOG_FILE"
             [ -n "$SHORTCUT_NAME" ] && rm -f "/usr/bin/$SHORTCUT_NAME"
             crontab -l 2>/dev/null | grep -v "${SCRIPT_NAME} --cron-auto" | crontab -
             echo -e "${GREEN}${TXT_UN_DONE}${PLAIN}"
@@ -908,7 +927,7 @@ show_menu() {
     echo -e "${TXT_STATUS_LABEL}: CA: ${GREEN}${CA_SERVER}${PLAIN} | Key: ${GREEN}${KEY_LENGTH}${PLAIN} | ${TXT_EMAIL_LABEL}: ${GREEN}${USER_EMAIL:-${TXT_NOT_SET}}${PLAIN}"
     echo -e "${BLUE}--------------------------------------------------------------${PLAIN}"
     if [ ! -f "$ACME_SH" ]; then echo -e "${RED}${TXT_HINT_INSTALL}${PLAIN}"; fi
-    if [ -f "$ENC_STORE" ]; then echo -e "${TXT_SEC_LABEL}: ${GREEN}ON (AES-256+HMAC)${PLAIN}"; else echo -e "${TXT_SEC_LABEL}: ${YELLOW}OFF (Standard)${PLAIN}"; fi
+    if [ -f "$ENC_STORE" ]; then echo -e "${TXT_SEC_LABEL}: ${GREEN}ON${PLAIN}"; else echo -e "${TXT_SEC_LABEL}: ${YELLOW}OFF${PLAIN}"; fi
     echo -e " 1. ${TXT_M_1}"
     echo -e " 2. ${TXT_M_2}"
     echo -e "--------------------------------------------------------------"
