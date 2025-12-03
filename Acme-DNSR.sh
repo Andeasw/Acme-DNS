@@ -34,15 +34,12 @@ LOG_FILE="${SCRIPT_DIR}/cron.log"
 _log() {
     local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $1"
     echo "$msg" >> "$LOG_FILE"
-    # Use system logger for critical cron errors
     if [[ "$1" == *"CRITICAL"* ]]; then
         logger -t "ACME_SUPER" -p user.crit "$msg"
     fi
 }
 
 cleanup() {
-    # Secure exit: No temp files to clean since we use process substitution
-    # But we force unset just in case
     unset SEC_KEY_PASS
 }
 trap cleanup EXIT INT TERM
@@ -67,7 +64,6 @@ _calc_hmac() {
 }
 
 _sec_save() {
-    # stdin -> encrypt -> file
     _sec_init
     local tmp_in=$(mktemp)
     cat > "$tmp_in"
@@ -85,7 +81,6 @@ _sec_save() {
 }
 
 _sec_load_env() {
-    # Loads encrypted env vars into current shell
     if [ -f "$ENC_STORE" ] && [ -f "$SEC_KEY" ] && [ -f "$ENC_SIG" ]; then
         local current_sig=$(_calc_hmac "$ENC_STORE" "$SEC_KEY")
         local stored_sig=$(cat "$ENC_SIG")
@@ -95,7 +90,6 @@ _sec_load_env() {
             return 2
         fi
 
-        # Use Process Substitution to avoid writing plaintext to disk
         source <(openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -pass file:"$SEC_KEY" -in "$ENC_STORE")
         return 0
     fi
@@ -104,7 +98,6 @@ _sec_load_env() {
 
 _strip_conf() {
     [ ! -f "$ACME_CONF" ] && return
-    # Sanitize account.conf to remove leakage
     sed -i '/Key/d' "$ACME_CONF"
     sed -i '/Secret/d' "$ACME_CONF"
     sed -i '/Token/d' "$ACME_CONF"
@@ -121,7 +114,11 @@ _valid_path() {
 }
 
 _valid_env_val() {
-    [[ "$1" =~ [;\`\&\|\$] ]] && return 1 || return 0
+    local bad_chars='[;`&|$]'
+    if [[ "$1" =~ $bad_chars ]]; then
+        return 1
+    fi
+    return 0
 }
 
 # --- Cron Logic ---
@@ -129,7 +126,6 @@ _valid_env_val() {
 _cron_logic() {
     _self_check || exit 1
     
-    # Use subshell to isolate environment
     (
         if [ -f "$ENC_STORE" ]; then
             if _sec_load_env; then
@@ -153,7 +149,6 @@ _cron_logic() {
                 "$ACME_SH" --renew -d "$domain" --force >> "$LOG_FILE" 2>&1
                 if [ $? -eq 0 ]; then
                     _log "Success: $domain"
-                    # Only strip conf if renewal succeeded (acme.sh might have written keys)
                     [ -f "$ENC_STORE" ] && _strip_conf
                 else
                     _log "Error: Renewal failed for $domain"
@@ -194,7 +189,7 @@ EOF
 
 load_language_strings() {
     if [ "$LANG_SET" == "en" ]; then
-        TXT_TITLE="Acme-DNS-Super V0.0.8 | Secure Cert Manager"
+        TXT_TITLE="Acme-DNS-Super V0.0.9 | Secure Cert Manager"
         TXT_STATUS_LABEL="Status"
         TXT_SEC_LABEL="Security"
         TXT_EMAIL_LABEL="Email"
@@ -277,7 +272,7 @@ load_language_strings() {
         TXT_ERR_ENV="Invalid ENV format."
         TXT_ERR_PATH="Invalid Path."
     else
-        TXT_TITLE="Acme-DNS-Super V0.0.8 | 证书管理大师"
+        TXT_TITLE="Acme-DNS-Super V0.0.9 | 证书管理大师"
         TXT_STATUS_LABEL="状态"
         TXT_SEC_LABEL="安全模式"
         TXT_EMAIL_LABEL="邮箱"
@@ -330,29 +325,29 @@ load_language_strings() {
         TXT_DNS_SEL="选择DNS服务商:"
         TXT_DNS_MANUAL="手动输入 (ENV)"
         TXT_DNS_KEY="API Key (隐藏输入): "
-        TXT_DNS_EMAIL="Email: "
+        TXT_DNS_EMAIL="Account Email: "
         TXT_INS_TITLE="部署证书到服务"
         TXT_INS_DESC="此操作将设置安装路径和重载命令，并永久保存用于自动续期。"
         TXT_INS_DOMAIN="请输入域名: "
-        TXT_INS_CERT_PATH="Cert 路径 (例 /etc/nginx/ssl/cert.pem): "
-        TXT_INS_KEY_PATH="Key 路径 (例 /etc/nginx/ssl/key.pem): "
-        TXT_INS_CA_PATH="CA 路径 (例 /etc/nginx/ssl/fullchain.pem): "
-        TXT_INS_RELOAD="重载命令 (例 systemctl reload nginx): "
-        TXT_INS_SUCCESS="部署成功！钩子已保存。"
-        TXT_SET_TITLE="系统设置"
-        TXT_SET_1="修改邮箱"
-        TXT_SET_2="切换语言"
-        TXT_SET_3="切换默认CA"
-        TXT_SET_4="切换密钥类型"
-        TXT_SET_5="更新 acme.sh"
-        TXT_SET_6="更新快捷指令"
-        TXT_SET_8="安全: 开启/关闭 本地密钥加密"
-        TXT_SET_UPDATED="已更新。"
-        TXT_UN_TITLE="卸载选项"
-        TXT_UN_1="仅删除配置"
-        TXT_UN_2="彻底卸载"
-        TXT_UN_CONFIRM="输入 'DELETE' 确认: "
-        TXT_UN_DONE="已卸载。"
+        TXT_INS_CERT_PATH="Cert 路径: "
+        TXT_INS_KEY_PATH="Key 路径: "
+        TXT_INS_CA_PATH="CA 路径: "
+        TXT_INS_RELOAD="Reload Cmd: "
+        TXT_INS_SUCCESS="Installed! Hook saved."
+        TXT_SET_TITLE="Settings"
+        TXT_SET_1="Change Email"
+        TXT_SET_2="Change Language"
+        TXT_SET_3="Switch CA"
+        TXT_SET_4="Switch Key Type"
+        TXT_SET_5="Upgrade acme.sh"
+        TXT_SET_6="Update Shortcut"
+        TXT_SET_8="Security: Encrypt Local Keys (Toggle)"
+        TXT_SET_UPDATED="Updated."
+        TXT_UN_TITLE="Uninstall"
+        TXT_UN_1="Remove Config"
+        TXT_UN_2="Full Uninstall"
+        TXT_UN_CONFIRM="Type 'DELETE' to confirm: "
+        TXT_UN_DONE="Uninstalled."
         TXT_SEC_ON="加密模式已开启 (HMAC校验)。已清理明文。每日03:10自动加密续期。"
         TXT_SEC_OFF="加密模式已关闭。任务已移除，恢复 acme.sh 原生续期。"
         TXT_SEC_FAIL="加密失败。未检测到 Key 或 OpenSSL 错误。"
@@ -576,7 +571,6 @@ issue_http() {
 issue_dns() {
     if [ ! -f "$ACME_SH" ]; then echo -e "${RED}${TXT_WARN_NO_INIT}${PLAIN}"; return; fi
     
-    # Use Subshell for Environment Isolation
     (
         if [ -f "$ENC_STORE" ]; then
             if _sec_load_env; then
@@ -709,19 +703,16 @@ issue_dns() {
         
         if [ $? -eq 0 ]; then
             echo -e "${GREEN}${TXT_ISSUE_SUCCESS}${PLAIN}"
-            # Flag for main shell to run install menu
             echo "SUCCESS_ISSUE" > /tmp/.acme_super_flag
         else
             echo -e "${RED}${TXT_ISSUE_FAIL}${PLAIN}"
         fi
         
-        # Clean up
         if [ -f "$ENC_STORE" ]; then
             _strip_conf
         fi
     )
     
-    # Check flag from subshell
     if [ -f /tmp/.acme_super_flag ]; then
         rm -f /tmp/.acme_super_flag
         install_cert_menu "$DOMAIN"
@@ -730,7 +721,6 @@ issue_dns() {
 
 toggle_security() {
     if [ -f "$ENC_STORE" ]; then
-        # Verify logic: Load in subshell to test
         ( if _sec_load_env; then exit 0; else exit 1; fi )
         if [ $? -eq 0 ]; then
             rm -f "$ENC_STORE" "$ENC_SIG" "$SEC_KEY"
