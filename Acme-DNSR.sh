@@ -25,6 +25,7 @@ ACME_CONF="$ACME_DIR/account.conf"
 ENC_STORE="${SCRIPT_DIR}/.db_structure"
 SEC_KEY="${SCRIPT_DIR}/.sys_log"
 SEC_TMP="${SCRIPT_DIR}/.cache_tmp"
+LOG_FILE="${SCRIPT_DIR}/cron.log"
 
 [[ $EUID -ne 0 ]] && echo -e "${RED}Error: Root privileges required!${PLAIN}" && exit 1
 
@@ -58,6 +59,10 @@ _sec_load() {
     return 1
 }
 
+_log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
+}
+
 _cron_logic() {
     if [ ! -d "$ACME_DIR" ]; then exit 0; fi
     
@@ -72,12 +77,16 @@ _cron_logic() {
         if ! openssl x509 -checkend 864000 -noout -in "$cert_file" >/dev/null 2>&1; then
             if [ -f "$ENC_STORE" ]; then
                 if _sec_load; then
-                    "$ACME_SH" --renew -d "$domain" --force
+                    _log "Renewing (Encrypted): $domain"
+                    "$ACME_SH" --renew -d "$domain" --force >> "$LOG_FILE" 2>&1
                     _sec_clean
                     _strip_conf
+                else
+                    _log "ERROR: Decryption failed for $domain renewal"
                 fi
             else
-                "$ACME_SH" --renew -d "$domain" --force
+                _log "Renewing (Standard): $domain"
+                "$ACME_SH" --renew -d "$domain" --force >> "$LOG_FILE" 2>&1
             fi
         fi
     done
@@ -112,7 +121,7 @@ EOF
 
 load_language_strings() {
     if [ "$LANG_SET" == "en" ]; then
-        TXT_TITLE="Acme-DNS-Super V0.0.4 | Cert Manager"
+        TXT_TITLE="Acme-DNS-Super V0.0.5 | Cert Manager"
         TXT_STATUS_LABEL="Status"
         TXT_SEC_LABEL="Security"
         TXT_EMAIL_LABEL="Email"
@@ -164,16 +173,16 @@ load_language_strings() {
         TXT_ISSUE_FAIL="Failed."
         TXT_DNS_SEL="Select DNS Provider:"
         TXT_DNS_MANUAL="Manual Input (ENV)"
-        TXT_DNS_KEY="API Key: "
+        TXT_DNS_KEY="API Key (Hidden): "
         TXT_DNS_EMAIL="Account Email: "
         TXT_INS_TITLE="Install Cert to Service"
-        TXT_INS_DESC="This sets up the deployment hook. It runs now AND automatically after every future renewal."
+        TXT_INS_DESC="Sets up deployment hook for auto-renewal."
         TXT_INS_DOMAIN="Enter Domain: "
-        TXT_INS_CERT_PATH="Cert Path (e.g., /etc/nginx/ssl/cert.pem): "
-        TXT_INS_KEY_PATH="Key Path (e.g., /etc/nginx/ssl/key.pem): "
-        TXT_INS_CA_PATH="CA Path (e.g., /etc/nginx/ssl/fullchain.pem): "
-        TXT_INS_RELOAD="Reload Cmd (e.g., systemctl reload nginx): "
-        TXT_INS_SUCCESS="Installed! Hook saved for auto-renewal."
+        TXT_INS_CERT_PATH="Cert Path: "
+        TXT_INS_KEY_PATH="Key Path: "
+        TXT_INS_CA_PATH="CA Path: "
+        TXT_INS_RELOAD="Reload Cmd: "
+        TXT_INS_SUCCESS="Installed! Hook saved."
         TXT_SET_TITLE="Settings"
         TXT_SET_1="Change Email"
         TXT_SET_2="Change Language"
@@ -190,10 +199,11 @@ load_language_strings() {
         TXT_UN_DONE="Uninstalled."
         TXT_SEC_ON="Encryption ENABLED. account.conf sanitized. Custom cron (03:10) set."
         TXT_SEC_OFF="Encryption DISABLED. Custom cron removed. acme.sh cron restored."
-        TXT_SEC_FAIL="Encryption Failed. Keys not found or OpenSSL error."
+        TXT_SEC_FAIL="Encryption Failed."
         TXT_SEC_NO_KEYS="No keys found to encrypt."
+        TXT_ERR_ENV="Invalid ENV format. Use KEY=VALUE (A-Z0-9_ only for KEY)."
     else
-        TXT_TITLE="Acme-DNS-Super V0.0.4 | 证书管理大师"
+        TXT_TITLE="Acme-DNS-Super V0.0.5 | 证书管理大师"
         TXT_STATUS_LABEL="状态"
         TXT_SEC_LABEL="安全模式"
         TXT_EMAIL_LABEL="邮箱"
@@ -245,7 +255,7 @@ load_language_strings() {
         TXT_ISSUE_FAIL="签发失败。"
         TXT_DNS_SEL="选择DNS服务商:"
         TXT_DNS_MANUAL="手动输入 (ENV)"
-        TXT_DNS_KEY="API Key: "
+        TXT_DNS_KEY="API Key (隐藏输入): "
         TXT_DNS_EMAIL="Email: "
         TXT_INS_TITLE="部署证书到服务"
         TXT_INS_DESC="此操作将设置安装路径和重载命令，并永久保存用于自动续期。"
@@ -269,10 +279,11 @@ load_language_strings() {
         TXT_UN_2="彻底卸载"
         TXT_UN_CONFIRM="输入 'DELETE' 确认: "
         TXT_UN_DONE="已卸载。"
-        TXT_SEC_ON="加密模式已开启。已清理 account.conf 明文。每日 03:10 自动加密续期。"
+        TXT_SEC_ON="加密模式已开启。已清理 account.conf。每日 03:10 自动加密续期。"
         TXT_SEC_OFF="加密模式已关闭。任务已移除，恢复 acme.sh 原生续期。"
         TXT_SEC_FAIL="加密失败。未检测到 Key 或 OpenSSL 错误。"
         TXT_SEC_NO_KEYS="未检测到有效 Key，无法执行加密。"
+        TXT_ERR_ENV="格式错误。必须为 KEY=VALUE (KEY仅限字母数字下划线)。"
     fi
 }
 
@@ -337,6 +348,14 @@ check_dependencies() {
         if ! systemctl is-active --quiet cron && ! systemctl is-active --quiet crond; then
              systemctl start cron 2>/dev/null || systemctl start crond 2>/dev/null
         fi
+    fi
+}
+
+check_port80() {
+    if command -v ss >/dev/null 2>&1; then
+        ss -tln | grep -q ":80 "
+    elif command -v netstat >/dev/null 2>&1; then
+        netstat -tuln | grep -q ":80 "
     fi
 }
 
@@ -406,15 +425,15 @@ install_cert_menu() {
     read -p "${TXT_INS_CA_PATH}" CA_PATH
     read -p "${TXT_INS_RELOAD}" RELOAD_CMD
     
-    local cmd_build="$ACME_SH --install-cert -d $DOMAIN"
-    [[ "$KEY_LENGTH" == "ec"* ]] && cmd_build="$cmd_build --ecc"
-    [ -n "$CERT_PATH" ] && cmd_build="$cmd_build --cert-file $CERT_PATH"
-    [ -n "$KEY_PATH" ] && cmd_build="$cmd_build --key-file $KEY_PATH"
-    [ -n "$CA_PATH" ] && cmd_build="$cmd_build --fullchain-file $CA_PATH"
-    [ -n "$RELOAD_CMD" ] && cmd_build="$cmd_build --reloadcmd \"$RELOAD_CMD\""
+    local args=("--install-cert" "-d" "$DOMAIN")
+    [[ "$KEY_LENGTH" == "ec"* ]] && args+=("--ecc")
+    [ -n "$CERT_PATH" ] && args+=("--cert-file" "$CERT_PATH")
+    [ -n "$KEY_PATH" ] && args+=("--key-file" "$KEY_PATH")
+    [ -n "$CA_PATH" ] && args+=("--fullchain-file" "$CA_PATH")
+    [ -n "$RELOAD_CMD" ] && args+=("--reloadcmd" "$RELOAD_CMD")
     
-    echo -e "${CYAN}Executing: $cmd_build${PLAIN}"
-    eval "$cmd_build"
+    echo -e "${CYAN}Executing Install...${PLAIN}"
+    "$ACME_SH" "${args[@]}"
     
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}${TXT_INS_SUCCESS}${PLAIN}"
@@ -434,27 +453,31 @@ issue_http() {
     echo -e "${TXT_HTTP_APACHE}"
     echo -e "${TXT_HTTP_WEBROOT}"
     read -p "${TXT_SELECT}" MODE
-    local cmd_flags=""
+    
+    local args=("--issue" "-d" "$DOMAIN" "--keylength" "$KEY_LENGTH" "--server" "$CA_SERVER")
+
     case $MODE in
         1) 
-            if command -v netstat &>/dev/null && netstat -tuln | grep -q ":80 "; then
+            if check_port80; then
                 echo -e "${RED}${TXT_PORT_80_WARN}${PLAIN}"
                 read -p "${TXT_CONTINUE_ASK}" cont
                 [[ "$cont" != "y" ]] && return
             fi
-            cmd_flags="--standalone" 
+            args+=("--standalone")
             ;;
-        2) cmd_flags="--nginx" ;;
-        3) cmd_flags="--apache" ;;
+        2) args+=("--nginx") ;;
+        3) args+=("--apache") ;;
         4) 
             read -p "${TXT_INPUT_WEBROOT}" webroot
             [ ! -d "$webroot" ] && return
-            cmd_flags="--webroot $webroot"
+            args+=("--webroot" "$webroot")
             ;;
         *) echo -e "${RED}${TXT_INVALID}${PLAIN}"; return ;;
     esac
+    
     echo -e "${CYAN}${TXT_ISSUE_START}${PLAIN}"
-    "$ACME_SH" --issue -d "$DOMAIN" $cmd_flags --keylength "$KEY_LENGTH" --server "$CA_SERVER"
+    "$ACME_SH" "${args[@]}"
+    
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}${TXT_ISSUE_SUCCESS}${PLAIN}"
         install_cert_menu "$DOMAIN"
@@ -490,14 +513,14 @@ issue_dns() {
     local dns_type=""
     case $DNS_OPT in
         1)
-            read -p "CloudFlare Global API Key: " CF_Key
+            read -s -p "CloudFlare Global API Key: " CF_Key; echo
             read -p "CloudFlare Email: " CF_Email
             export CF_Key="$CF_Key"
             export CF_Email="$CF_Email"
             dns_type="dns_cf"
             ;;
         2)
-            read -p "LuaDNS API Key: " LUA_Key
+            read -s -p "LuaDNS API Key: " LUA_Key; echo
             read -p "LuaDNS Email: " LUA_Email
             export LUA_Key="$LUA_Key"
             export LUA_Email="$LUA_Email"
@@ -505,7 +528,7 @@ issue_dns() {
             ;;
         3)
             read -p "HE.net Username: " HE_Username
-            read -p "HE.net Password: " HE_Password
+            read -s -p "HE.net Password: " HE_Password; echo
             export HE_Username="$HE_Username"
             export HE_Password="$HE_Password"
             dns_type="dns_he"
@@ -513,7 +536,7 @@ issue_dns() {
         4)
             read -p "ClouDNS Auth ID: " CLOUDNS_AUTH_ID
             read -p "ClouDNS Sub Auth ID (Opt): " CLOUDNS_SUB_AUTH_ID
-            read -p "ClouDNS Password: " CLOUDNS_AUTH_PASSWORD
+            read -s -p "ClouDNS Password: " CLOUDNS_AUTH_PASSWORD; echo
             export CLOUDNS_AUTH_ID="$CLOUDNS_AUTH_ID"
             export CLOUDNS_SUB_AUTH_ID="$CLOUDNS_SUB_AUTH_ID"
             export CLOUDNS_AUTH_PASSWORD="$CLOUDNS_AUTH_PASSWORD"
@@ -522,7 +545,7 @@ issue_dns() {
         5)
             read -p "PowerDNS URL: " PDNS_Url
             read -p "PowerDNS ServerId: " PDNS_ServerId
-            read -p "PowerDNS Token: " PDNS_Token
+            read -s -p "PowerDNS Token: " PDNS_Token; echo
             read -p "PowerDNS TTL (60): " PDNS_Ttl
             export PDNS_Url="$PDNS_Url"
             export PDNS_ServerId="$PDNS_ServerId"
@@ -532,24 +555,24 @@ issue_dns() {
             ;;
         6)
             read -p "1984Hosting Username: " One984_Username
-            read -p "1984Hosting Password: " One984_Password
+            read -s -p "1984Hosting Password: " One984_Password; echo
             export One984_Username="$One984_Username"
             export One984_Password="$One984_Password"
             dns_type="dns_1984hosting"
             ;;
         7)
-            read -p "deSEC.io Token: " DEDYN_TOKEN
+            read -s -p "deSEC.io Token: " DEDYN_TOKEN; echo
             export DEDYN_TOKEN="$DEDYN_TOKEN"
             dns_type="dns_desec"
             ;;
         8)
-            read -p "dynv6 Token: " DYNV6_TOKEN
+            read -s -p "dynv6 Token: " DYNV6_TOKEN; echo
             export DYNV6_TOKEN="$DYNV6_TOKEN"
             dns_type="dns_dynv6"
             ;;
         9)
             read -p "AliYun Key: " Ali_Key
-            read -p "AliYun Secret: " Ali_Secret
+            read -s -p "AliYun Secret: " Ali_Secret; echo
             export Ali_Key="$Ali_Key"
             export Ali_Secret="$Ali_Secret"
             dns_type="dns_ali"
@@ -559,7 +582,11 @@ issue_dns() {
             while true; do
                 read -p "ENV > " env_in
                 [[ "$env_in" == "end" ]] && break
-                export "$env_in"
+                if [[ "$env_in" =~ ^[a-zA-Z_][a-zA-Z0-9_]*=.*$ ]]; then
+                    export "$env_in"
+                else
+                    echo -e "${RED}${TXT_ERR_ENV}${PLAIN}"
+                fi
             done
             read -p "Plugin Name (e.g. dns_dp): " dns_type
             ;;
@@ -569,7 +596,8 @@ issue_dns() {
     [ -z "$dns_type" ] && { [ -f "$ENC_STORE" ] && _sec_clean; return; }
     
     echo -e "${CYAN}${TXT_ISSUE_START}${PLAIN}"
-    "$ACME_SH" --issue --dns "$dns_type" -d "$DOMAIN" --keylength "$KEY_LENGTH" --server "$CA_SERVER"
+    local args=("--issue" "--dns" "$dns_type" "-d" "$DOMAIN" "--keylength" "$KEY_LENGTH" "--server" "$CA_SERVER")
+    "$ACME_SH" "${args[@]}"
     
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}${TXT_ISSUE_SUCCESS}${PLAIN}"
@@ -753,11 +781,12 @@ uninstall_menu() {
         read -p "${TXT_UN_CONFIRM}" confirm
         if [ "$confirm" == "DELETE" ]; then
             [ -f "$ACME_SH" ] && "$ACME_SH" --uninstall
-            rm -rf "$ACME_DIR" "$CONFIG_FILE" "$0" "$ENC_STORE" "$SEC_KEY"
+            rm -rf "$ACME_DIR" "$CONFIG_FILE" "$ENC_STORE" "$SEC_KEY" "$LOG_FILE"
             [ -n "$SHORTCUT_NAME" ] && rm -f "/usr/bin/$SHORTCUT_NAME"
             _sec_clean
             crontab -l 2>/dev/null | grep -v "${SCRIPT_NAME} --cron-auto" | crontab -
             echo -e "${GREEN}${TXT_UN_DONE}${PLAIN}"
+            rm -f "$0"
             exit 0
         fi
     fi
