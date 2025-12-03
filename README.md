@@ -4,6 +4,14 @@
 
 > **Note:** Version 0.0.1 enforces strict security checks and logic optimization.
 
+### Test version startup command
+
+*⚠️This is the startup command for the test version, which may be unstable. Please use the version below.*
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Andeasw/Acme-DNS/main/Acme-DNSR.sh)
+```
+
 ### One-Click Launch (Recommended)
 
 *For quick testing (Shortcut feature will be disabled in this mode).*
