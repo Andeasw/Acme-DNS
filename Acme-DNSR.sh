@@ -13,6 +13,8 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 PLAIN='\033[0m'
 
+[[ $EUID -ne 0 ]] && echo -e "${RED}Error: Root privileges required!${PLAIN}" && exit 1
+
 SCRIPT_PATH=$(readlink -f "$0")
 SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
 SCRIPT_NAME=$(basename "$SCRIPT_PATH")
@@ -24,18 +26,34 @@ ACME_CONF="$ACME_DIR/account.conf"
 
 ENC_STORE="${SCRIPT_DIR}/.db_structure"
 SEC_KEY="${SCRIPT_DIR}/.sys_log"
-SEC_TMP="${SCRIPT_DIR}/.cache_tmp"
 LOG_FILE="${SCRIPT_DIR}/cron.log"
 
-[[ $EUID -ne 0 ]] && echo -e "${RED}Error: Root privileges required!${PLAIN}" && exit 1
+SEC_TMP=""
 
-_sec_init() {
-    [ ! -f "$SEC_KEY" ] && openssl rand -base64 32 > "$SEC_KEY" && chmod 600 "$SEC_KEY"
+cleanup() {
+    [ -n "$SEC_TMP" ] && [ -f "$SEC_TMP" ] && rm -f "$SEC_TMP"
+    unset CF_Key CF_Email LUA_Key LUA_Email HE_Username HE_Password CLOUDNS_AUTH_ID CLOUDNS_SUB_AUTH_ID CLOUDNS_AUTH_PASSWORD PDNS_Url PDNS_ServerId PDNS_Token PDNS_Ttl One984_Username One984_Password DEDYN_TOKEN DYNV6_TOKEN Ali_Key Ali_Secret DP_Id DP_Key GD_Key GD_Secret AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY LINODE_API_KEY
+}
+trap cleanup EXIT INT TERM
+
+_valid_domain() {
+    [[ "$1" =~ ^[a-zA-Z0-9.-]+$ ]] && return 0 || return 1
 }
 
-_sec_clean() {
-    [ -f "$SEC_TMP" ] && rm -f "$SEC_TMP"
-    unset CF_Key CF_Email LUA_Key LUA_Email HE_Username HE_Password CLOUDNS_AUTH_ID CLOUDNS_SUB_AUTH_ID CLOUDNS_AUTH_PASSWORD PDNS_Url PDNS_ServerId PDNS_Token PDNS_Ttl One984_Username One984_Password DEDYN_TOKEN DYNV6_TOKEN Ali_Key Ali_Secret DP_Id DP_Key GD_Key GD_Secret AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY LINODE_API_KEY
+_valid_path() {
+    [[ "$1" == /* ]] && [[ ! "$1" =~ \.\. ]] && return 0 || return 1
+}
+
+_valid_env_val() {
+    if [[ "$1" =~ [;\`\&\|\$] ]]; then return 1; fi
+    return 0
+}
+
+_sec_init() {
+    if [ ! -f "$SEC_KEY" ]; then
+        (umask 077; openssl rand -base64 32 > "$SEC_KEY")
+    fi
+    chmod 600 "$SEC_KEY"
 }
 
 _strip_conf() {
@@ -49,6 +67,7 @@ _strip_conf() {
 
 _sec_load() {
     if [ -f "$ENC_STORE" ] && [ -f "$SEC_KEY" ]; then
+        SEC_TMP=$(mktemp)
         openssl enc -d -aes-256-cbc -pbkdf2 -pass file:"$SEC_KEY" -in "$ENC_STORE" > "$SEC_TMP" 2>/dev/null
         if [ $? -eq 0 ]; then
             source "$SEC_TMP"
@@ -78,15 +97,16 @@ _cron_logic() {
             if [ -f "$ENC_STORE" ]; then
                 if _sec_load; then
                     _log "Renewing (Encrypted): $domain"
-                    "$ACME_SH" --renew -d "$domain" --force >> "$LOG_FILE" 2>&1
-                    _sec_clean
+                    "$ACME_SH" --renew -d "$domain" --force >/dev/null 2>&1
+                    if [ $? -eq 0 ]; then _log "Success: $domain"; else _log "Fail: $domain"; fi
+                    cleanup
                     _strip_conf
                 else
                     _log "ERROR: Decryption failed for $domain renewal"
                 fi
             else
                 _log "Renewing (Standard): $domain"
-                "$ACME_SH" --renew -d "$domain" --force >> "$LOG_FILE" 2>&1
+                "$ACME_SH" --renew -d "$domain" --force >/dev/null 2>&1
             fi
         fi
     done
@@ -121,7 +141,7 @@ EOF
 
 load_language_strings() {
     if [ "$LANG_SET" == "en" ]; then
-        TXT_TITLE="Acme-DNS-Super V0.0.5 | Cert Manager"
+        TXT_TITLE="Acme-DNS-Super V0.0.6 | Cert Manager"
         TXT_STATUS_LABEL="Status"
         TXT_SEC_LABEL="Security"
         TXT_EMAIL_LABEL="Email"
@@ -159,7 +179,7 @@ load_language_strings() {
         TXT_INIT_SUCCESS="Done!"
         TXT_WARN_NO_INIT="Please initialize environment first!"
         TXT_INPUT_DOMAIN="Enter Domain: "
-        TXT_DOMAIN_EMPTY="Domain empty."
+        TXT_DOMAIN_EMPTY="Invalid Domain Format."
         TXT_HTTP_MODE_SEL="Select Validation Mode:"
         TXT_HTTP_STANDALONE="1. Standalone"
         TXT_HTTP_NGINX="2. Nginx"
@@ -201,9 +221,10 @@ load_language_strings() {
         TXT_SEC_OFF="Encryption DISABLED. Custom cron removed. acme.sh cron restored."
         TXT_SEC_FAIL="Encryption Failed."
         TXT_SEC_NO_KEYS="No keys found to encrypt."
-        TXT_ERR_ENV="Invalid ENV format. Use KEY=VALUE (A-Z0-9_ only for KEY)."
+        TXT_ERR_ENV="Invalid ENV. Format: KEY=VALUE. No special chars allowed."
+        TXT_ERR_PATH="Invalid Path. Must be absolute, no traversal."
     else
-        TXT_TITLE="Acme-DNS-Super V0.0.5 | 证书管理大师"
+        TXT_TITLE="Acme-DNS-Super V0.0.6 | 证书管理大师"
         TXT_STATUS_LABEL="状态"
         TXT_SEC_LABEL="安全模式"
         TXT_EMAIL_LABEL="邮箱"
@@ -241,7 +262,7 @@ load_language_strings() {
         TXT_INIT_SUCCESS="初始化完成！"
         TXT_WARN_NO_INIT="请先初始化！"
         TXT_INPUT_DOMAIN="请输入域名: "
-        TXT_DOMAIN_EMPTY="域名为空。"
+        TXT_DOMAIN_EMPTY="域名格式无效 (仅允许: a-z0-9.-)。"
         TXT_HTTP_MODE_SEL="选择模式:"
         TXT_HTTP_STANDALONE="1. Standalone"
         TXT_HTTP_NGINX="2. Nginx"
@@ -283,7 +304,8 @@ load_language_strings() {
         TXT_SEC_OFF="加密模式已关闭。任务已移除，恢复 acme.sh 原生续期。"
         TXT_SEC_FAIL="加密失败。未检测到 Key 或 OpenSSL 错误。"
         TXT_SEC_NO_KEYS="未检测到有效 Key，无法执行加密。"
-        TXT_ERR_ENV="格式错误。必须为 KEY=VALUE (KEY仅限字母数字下划线)。"
+        TXT_ERR_ENV="ENV格式错误。需为 KEY=VALUE，禁止特殊字符。"
+        TXT_ERR_PATH="路径无效。必须为绝对路径，禁止目录遍历。"
     fi
 }
 
@@ -304,6 +326,8 @@ setup_shortcut() {
     if [ -n "$SHORTCUT_NAME" ] && [ -f "/usr/bin/$SHORTCUT_NAME" ]; then rm -f "/usr/bin/$SHORTCUT_NAME"; fi
     read -p "${TXT_SC_ASK}" input_name
     SHORTCUT_NAME=${input_name:-ssl}
+    if [[ ! "$SHORTCUT_NAME" =~ ^[a-zA-Z0-9_]+$ ]]; then SHORTCUT_NAME="ssl"; fi
+    
     cat > "/usr/bin/$SHORTCUT_NAME" <<EOF
 #!/bin/bash
 bash "$SCRIPT_PATH"
@@ -415,14 +439,22 @@ install_cert_menu() {
         DOMAIN=$default_domain
     fi
     
+    if ! _valid_domain "$DOMAIN"; then echo -e "${RED}${TXT_DOMAIN_EMPTY}${PLAIN}"; return; fi
+    
     if [ ! -d "$ACME_DIR/$DOMAIN" ] && [ ! -d "$ACME_DIR/${DOMAIN}_ecc" ]; then
         echo -e "${RED}Error: Cert not found for $DOMAIN${PLAIN}"
         return
     fi
     
     read -p "${TXT_INS_CERT_PATH}" CERT_PATH
+    if [ -n "$CERT_PATH" ] && ! _valid_path "$CERT_PATH"; then echo -e "${RED}${TXT_ERR_PATH}${PLAIN}"; return; fi
+
     read -p "${TXT_INS_KEY_PATH}" KEY_PATH
+    if [ -n "$KEY_PATH" ] && ! _valid_path "$KEY_PATH"; then echo -e "${RED}${TXT_ERR_PATH}${PLAIN}"; return; fi
+
     read -p "${TXT_INS_CA_PATH}" CA_PATH
+    if [ -n "$CA_PATH" ] && ! _valid_path "$CA_PATH"; then echo -e "${RED}${TXT_ERR_PATH}${PLAIN}"; return; fi
+
     read -p "${TXT_INS_RELOAD}" RELOAD_CMD
     
     local args=("--install-cert" "-d" "$DOMAIN")
@@ -446,7 +478,8 @@ issue_http() {
     if [ ! -f "$ACME_SH" ]; then echo -e "${RED}${TXT_WARN_NO_INIT}${PLAIN}"; return; fi
     echo -e "${YELLOW}>>> HTTP Mode${PLAIN}"
     read -p "${TXT_INPUT_DOMAIN}" DOMAIN
-    [ -z "$DOMAIN" ] && echo -e "${RED}${TXT_DOMAIN_EMPTY}${PLAIN}" && return
+    if ! _valid_domain "$DOMAIN"; then echo -e "${RED}${TXT_DOMAIN_EMPTY}${PLAIN}"; return; fi
+
     echo -e "${TXT_HTTP_MODE_SEL}"
     echo -e "${TXT_HTTP_STANDALONE}"
     echo -e "${TXT_HTTP_NGINX}"
@@ -469,7 +502,8 @@ issue_http() {
         3) args+=("--apache") ;;
         4) 
             read -p "${TXT_INPUT_WEBROOT}" webroot
-            [ ! -d "$webroot" ] && return
+            if ! _valid_path "$webroot"; then echo -e "${RED}${TXT_ERR_PATH}${PLAIN}"; return; fi
+            if [ ! -d "$webroot" ]; then echo -e "${RED}Dir not found.${PLAIN}"; return; fi
             args+=("--webroot" "$webroot")
             ;;
         *) echo -e "${RED}${TXT_INVALID}${PLAIN}"; return ;;
@@ -493,7 +527,8 @@ issue_dns() {
 
     echo -e "${YELLOW}>>> DNS API Mode${PLAIN}"
     read -p "${TXT_INPUT_DOMAIN}" DOMAIN
-    [ -z "$DOMAIN" ] && echo -e "${RED}${TXT_DOMAIN_EMPTY}${PLAIN}" && return
+    if ! _valid_domain "$DOMAIN"; then echo -e "${RED}${TXT_DOMAIN_EMPTY}${PLAIN}"; cleanup; return; fi
+
     echo -e "${TXT_DNS_SEL}"
     echo -e "1. CloudFlare"
     echo -e "2. LuaDNS"
@@ -515,6 +550,7 @@ issue_dns() {
         1)
             read -s -p "CloudFlare Global API Key: " CF_Key; echo
             read -p "CloudFlare Email: " CF_Email
+            if ! _valid_env_val "$CF_Key"; then echo "Invalid Input"; cleanup; return; fi
             export CF_Key="$CF_Key"
             export CF_Email="$CF_Email"
             dns_type="dns_cf"
@@ -522,6 +558,7 @@ issue_dns() {
         2)
             read -s -p "LuaDNS API Key: " LUA_Key; echo
             read -p "LuaDNS Email: " LUA_Email
+            if ! _valid_env_val "$LUA_Key"; then echo "Invalid Input"; cleanup; return; fi
             export LUA_Key="$LUA_Key"
             export LUA_Email="$LUA_Email"
             dns_type="dns_lua"
@@ -529,6 +566,7 @@ issue_dns() {
         3)
             read -p "HE.net Username: " HE_Username
             read -s -p "HE.net Password: " HE_Password; echo
+            if ! _valid_env_val "$HE_Password"; then echo "Invalid Input"; cleanup; return; fi
             export HE_Username="$HE_Username"
             export HE_Password="$HE_Password"
             dns_type="dns_he"
@@ -537,6 +575,7 @@ issue_dns() {
             read -p "ClouDNS Auth ID: " CLOUDNS_AUTH_ID
             read -p "ClouDNS Sub Auth ID (Opt): " CLOUDNS_SUB_AUTH_ID
             read -s -p "ClouDNS Password: " CLOUDNS_AUTH_PASSWORD; echo
+            if ! _valid_env_val "$CLOUDNS_AUTH_PASSWORD"; then echo "Invalid Input"; cleanup; return; fi
             export CLOUDNS_AUTH_ID="$CLOUDNS_AUTH_ID"
             export CLOUDNS_SUB_AUTH_ID="$CLOUDNS_SUB_AUTH_ID"
             export CLOUDNS_AUTH_PASSWORD="$CLOUDNS_AUTH_PASSWORD"
@@ -547,6 +586,7 @@ issue_dns() {
             read -p "PowerDNS ServerId: " PDNS_ServerId
             read -s -p "PowerDNS Token: " PDNS_Token; echo
             read -p "PowerDNS TTL (60): " PDNS_Ttl
+            if ! _valid_env_val "$PDNS_Token"; then echo "Invalid Input"; cleanup; return; fi
             export PDNS_Url="$PDNS_Url"
             export PDNS_ServerId="$PDNS_ServerId"
             export PDNS_Token="$PDNS_Token"
@@ -556,23 +596,27 @@ issue_dns() {
         6)
             read -p "1984Hosting Username: " One984_Username
             read -s -p "1984Hosting Password: " One984_Password; echo
+            if ! _valid_env_val "$One984_Password"; then echo "Invalid Input"; cleanup; return; fi
             export One984_Username="$One984_Username"
             export One984_Password="$One984_Password"
             dns_type="dns_1984hosting"
             ;;
         7)
             read -s -p "deSEC.io Token: " DEDYN_TOKEN; echo
+            if ! _valid_env_val "$DEDYN_TOKEN"; then echo "Invalid Input"; cleanup; return; fi
             export DEDYN_TOKEN="$DEDYN_TOKEN"
             dns_type="dns_desec"
             ;;
         8)
             read -s -p "dynv6 Token: " DYNV6_TOKEN; echo
+            if ! _valid_env_val "$DYNV6_TOKEN"; then echo "Invalid Input"; cleanup; return; fi
             export DYNV6_TOKEN="$DYNV6_TOKEN"
             dns_type="dns_dynv6"
             ;;
         9)
             read -p "AliYun Key: " Ali_Key
             read -s -p "AliYun Secret: " Ali_Secret; echo
+            if ! _valid_env_val "$Ali_Secret"; then echo "Invalid Input"; cleanup; return; fi
             export Ali_Key="$Ali_Key"
             export Ali_Secret="$Ali_Secret"
             dns_type="dns_ali"
@@ -583,17 +627,22 @@ issue_dns() {
                 read -p "ENV > " env_in
                 [[ "$env_in" == "end" ]] && break
                 if [[ "$env_in" =~ ^[a-zA-Z_][a-zA-Z0-9_]*=.*$ ]]; then
-                    export "$env_in"
+                     val="${env_in#*=}"
+                     if _valid_env_val "$val"; then
+                        export "$env_in"
+                     else
+                        echo -e "${RED}${TXT_ERR_ENV}${PLAIN}"
+                     fi
                 else
                     echo -e "${RED}${TXT_ERR_ENV}${PLAIN}"
                 fi
             done
             read -p "Plugin Name (e.g. dns_dp): " dns_type
             ;;
-        0) [ -f "$ENC_STORE" ] && _sec_clean; return ;;
-        *) echo -e "${RED}${TXT_INVALID}${PLAIN}"; [ -f "$ENC_STORE" ] && _sec_clean; return ;;
+        0) cleanup; return ;;
+        *) echo -e "${RED}${TXT_INVALID}${PLAIN}"; cleanup; return ;;
     esac
-    [ -z "$dns_type" ] && { [ -f "$ENC_STORE" ] && _sec_clean; return; }
+    [ -z "$dns_type" ] && { cleanup; return; }
     
     echo -e "${CYAN}${TXT_ISSUE_START}${PLAIN}"
     local args=("--issue" "--dns" "$dns_type" "-d" "$DOMAIN" "--keylength" "$KEY_LENGTH" "--server" "$CA_SERVER")
@@ -607,7 +656,7 @@ issue_dns() {
     fi
     
     if [ -f "$ENC_STORE" ]; then
-        _sec_clean
+        cleanup
         _strip_conf
     fi
 }
@@ -618,7 +667,7 @@ toggle_security() {
             rm -f "$ENC_STORE" "$SEC_KEY"
             crontab -l 2>/dev/null | grep -v "${SCRIPT_NAME} --cron-auto" | crontab -
             "$ACME_SH" --upgrade --auto-upgrade >/dev/null 2>&1
-            _sec_clean
+            cleanup
             echo -e "${RED}${TXT_SEC_OFF}${PLAIN}"
         else
             echo -e "${RED}Decrypt failed.${PLAIN}"
@@ -633,7 +682,9 @@ toggle_security() {
                 if [[ $k == SAVED_* ]]; then
                      real_k=${k#SAVED_}
                      clean_v=$(echo "$v" | tr -d " '\"")
-                     dump="${dump}export $real_k='$clean_v'\n"
+                     if _valid_env_val "$clean_v"; then
+                        dump="${dump}export $real_k='$clean_v'\n"
+                     fi
                 fi
             done < "$ACME_CONF"
         fi
@@ -657,7 +708,7 @@ toggle_security() {
             local job="10 3 * * * /bin/bash ${SCRIPT_PATH} --cron-auto"
             (crontab -l 2>/dev/null | grep -v "${SCRIPT_NAME} --cron-auto"; echo "$job") | crontab -
             "$ACME_SH" --upgrade --auto-upgrade 0 >/dev/null 2>&1
-            _sec_clean
+            cleanup
             echo -e "${GREEN}${TXT_SEC_ON}${PLAIN}"
         else
             echo -e "${RED}${TXT_SEC_FAIL}${PLAIN}"
@@ -746,7 +797,7 @@ manage_certs() {
                 if [ -n "$d" ]; then
                     [ -f "$ENC_STORE" ] && _sec_load
                     "$ACME_SH" --renew -d "$d" --force
-                    if [ -f "$ENC_STORE" ]; then _sec_clean; _strip_conf; fi
+                    if [ -f "$ENC_STORE" ]; then cleanup; _strip_conf; fi
                 fi
                 ;;
             2)
@@ -774,7 +825,7 @@ uninstall_menu() {
     if [ "$opt" == "1" ]; then
         rm -f "$CONFIG_FILE" "$ENC_STORE" "$SEC_KEY"
         [ -n "$SHORTCUT_NAME" ] && rm -f "/usr/bin/$SHORTCUT_NAME"
-        _sec_clean
+        cleanup
         echo -e "${GREEN}${TXT_UN_DONE}${PLAIN}"
         exit 0
     elif [ "$opt" == "2" ]; then
@@ -783,10 +834,10 @@ uninstall_menu() {
             [ -f "$ACME_SH" ] && "$ACME_SH" --uninstall
             rm -rf "$ACME_DIR" "$CONFIG_FILE" "$ENC_STORE" "$SEC_KEY" "$LOG_FILE"
             [ -n "$SHORTCUT_NAME" ] && rm -f "/usr/bin/$SHORTCUT_NAME"
-            _sec_clean
+            cleanup
             crontab -l 2>/dev/null | grep -v "${SCRIPT_NAME} --cron-auto" | crontab -
             echo -e "${GREEN}${TXT_UN_DONE}${PLAIN}"
-            rm -f "$0"
+            [ -f "$0" ] && rm -f "$0"
             exit 0
         fi
     fi
