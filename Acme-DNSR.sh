@@ -24,23 +24,32 @@ ACME_DIR="$HOME/.acme.sh"
 ACME_SH="$ACME_DIR/acme.sh"
 ACME_CONF="$ACME_DIR/account.conf"
 
+# Obfuscated Storage
 ENC_STORE="${SCRIPT_DIR}/.sys_cache_dat"
 ENC_SIG="${SCRIPT_DIR}/.sys_cache_sig"
 LOG_FILE="${SCRIPT_DIR}/task_manager.log"
+LOCK_FILE="/tmp/acme_super_cron.lock"
+
+# --- Logging & Cleanup ---
 
 _log() {
     (umask 077; [ ! -f "$LOG_FILE" ] && touch "$LOG_FILE")
     local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $1"
     echo "$msg" >> "$LOG_FILE"
     if [[ "$1" == *"CRITICAL"* ]]; then
-        logger -t "ACME_GUARD" -p user.crit "$msg"
+        if command -v logger >/dev/null 2>&1; then
+            logger -t "ACME_GUARD" -p user.crit "$msg"
+        fi
     fi
 }
 
 cleanup() {
     unset _K_VAL
+    [ -f "$LOCK_FILE" ] && rm -f "$LOCK_FILE"
 }
 trap cleanup EXIT INT TERM
+
+# --- System Integrity & Crypto ---
 
 _self_check() {
     if [ ! -f "$ACME_SH" ]; then
@@ -108,6 +117,7 @@ _sec_load_env() {
         fi
 
         local _k=$(_get_sys_entropy)
+        # Decrypt directly into memory via process substitution
         source <(openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -pass pass:"$_k" -in "$ENC_STORE")
         return 0
     fi
@@ -116,12 +126,15 @@ _sec_load_env() {
 
 _strip_conf() {
     [ ! -f "$ACME_CONF" ] && return
+    # Remove sensitive data to enforce memory-only usage
     sed -i '/Key/d' "$ACME_CONF"
     sed -i '/Secret/d' "$ACME_CONF"
     sed -i '/Token/d' "$ACME_CONF"
     sed -i '/Password/d' "$ACME_CONF"
     sed -i '/SAVED_/d' "$ACME_CONF"
 }
+
+# --- Validators ---
 
 _valid_domain() {
     [[ "$1" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$ ]] && return 0 || return 1
@@ -132,10 +145,40 @@ _valid_path() {
 }
 
 _valid_env_val() {
-    [[ "$1" =~ ^[a-zA-Z0-9_.~-]+$ ]] && return 0 || return 1
+    # Strict whitelist: Alphanumeric, underscore, dot, hyphen, equals (for KEY=VAL)
+    # No shell meta-characters allowed
+    [[ "$1" =~ ^[a-zA-Z0-9_.~=-]+$ ]] && return 0 || return 1
 }
 
+check_port80() {
+    if command -v ss >/dev/null 2>&1; then
+        if ss -tln | grep -q ":80 "; then return 0; fi
+    fi
+    
+    if command -v netstat >/dev/null 2>&1; then
+        if netstat -tuln | grep -q ":80 "; then return 0; fi
+    fi
+    
+    if command -v lsof >/dev/null 2>&1; then
+        if lsof -i :80 >/dev/null 2>&1; then return 0; fi
+    fi
+    
+    return 1
+}
+
+# --- Core Logic ---
+
 _cron_logic() {
+    # Prevent re-entry
+    if [ -f "$LOCK_FILE" ]; then
+        # Check if process is actually running
+        local pid=$(cat "$LOCK_FILE")
+        if kill -0 "$pid" 2>/dev/null; then
+            exit 0
+        fi
+    fi
+    echo $$ > "$LOCK_FILE"
+
     _self_check || exit 1
     
     (
@@ -154,21 +197,16 @@ _cron_logic() {
             if [ ! -f "$cert_file" ]; then cert_file="$d/${domain}.cer"; fi
             if [ ! -f "$cert_file" ]; then continue; fi
             
-            if openssl x509 -noout -in "$cert_file" >/dev/null 2>&1; then
-                end_date=$(openssl x509 -enddate -noout -in "$cert_file" | cut -d= -f2)
-                end_epoch=$(date -d "$end_date" +%s)
-                now_epoch=$(date +%s)
-                days_left=$(( (end_epoch - now_epoch) / 86400 ))
-                
-                if [ "$days_left" -lt 10 ]; then
-                    _log "Renewing: $domain (Days left: $days_left)"
-                    "$ACME_SH" --renew -d "$domain" --force >> "$LOG_FILE" 2>&1
-                    if [ $? -eq 0 ]; then
-                        _log "Success: $domain"
-                        [ -f "$ENC_STORE" ] && _strip_conf
-                    else
-                        _log "Error: Renewal failed for $domain"
-                    fi
+            # Check expiry using OpenSSL directly (Portable, no 'date' dependency)
+            # 864000 seconds = 10 days
+            if ! openssl x509 -checkend 864000 -noout -in "$cert_file" >/dev/null 2>&1; then
+                _log "Renewing: $domain (Expires < 10 days)"
+                "$ACME_SH" --renew -d "$domain" --force >> "$LOG_FILE" 2>&1
+                if [ $? -eq 0 ]; then
+                    _log "Success: $domain"
+                    [ -f "$ENC_STORE" ] && _strip_conf
+                else
+                    _log "Error: Renewal failed for $domain"
                 fi
             fi
         done
@@ -179,6 +217,8 @@ if [ "$1" == "--cron-auto" ]; then
     _cron_logic
     exit 0
 fi
+
+# --- Configuration & UI ---
 
 load_config() {
     if [ -f "$CONFIG_FILE" ]; then
@@ -204,7 +244,7 @@ EOF
 
 load_language_strings() {
     if [ "$LANG_SET" == "en" ]; then
-        TXT_TITLE="Acme-DNS-Super V0.1.1 | Secure Cert Manager"
+        TXT_TITLE="Acme-DNS-Super V0.1.2 | Secure Cert Manager"
         TXT_STATUS_LABEL="Status"
         TXT_SEC_LABEL="Security"
         TXT_EMAIL_LABEL="Email"
@@ -247,6 +287,7 @@ load_language_strings() {
         TXT_CHECK_DEP="Checking dependencies..."
         TXT_MISSING_DEP="Missing dependencies, updating..."
         TXT_INSTALLING_DEP="Installing: "
+        TXT_INSTALL_FAIL="Error: Install failed for: "
         TXT_ACME_EXIST="acme.sh is already installed."
         TXT_ACME_INSTALLING="Installing acme.sh..."
         TXT_INPUT_EMAIL="Enter Email: "
@@ -287,7 +328,7 @@ load_language_strings() {
         TXT_ERR_ENV="Invalid ENV format (A-Z0-9_ only)."
         TXT_ERR_PATH="Invalid Path."
     else
-        TXT_TITLE="Acme-DNS-Super V0.1.1 | 证书管理大师"
+        TXT_TITLE="Acme-DNS-Super V0.1.2 | 证书管理大师"
         TXT_STATUS_LABEL="状态"
         TXT_SEC_LABEL="安全模式"
         TXT_EMAIL_LABEL="邮箱"
@@ -330,6 +371,7 @@ load_language_strings() {
         TXT_CHECK_DEP="检查依赖..."
         TXT_MISSING_DEP="缺失依赖，正在更新..."
         TXT_INSTALLING_DEP="安装: "
+        TXT_INSTALL_FAIL="错误: 安装失败: "
         TXT_ACME_EXIST="acme.sh 已安装。"
         TXT_ACME_INSTALLING="安装 acme.sh..."
         TXT_INPUT_EMAIL="请输入邮箱: "
@@ -387,6 +429,7 @@ select_language_first() {
 setup_shortcut() {
     echo -e "${YELLOW}${TXT_SC_CREATE}${PLAIN}"
     if [ -n "$SHORTCUT_NAME" ] && [ -f "/usr/bin/$SHORTCUT_NAME" ]; then
+        # Prevent overwriting system binaries
         if ! grep -q "$SCRIPT_NAME" "/usr/bin/$SHORTCUT_NAME"; then
             echo -e "${RED}${TXT_SC_FAIL}${PLAIN}"
             return
@@ -410,23 +453,32 @@ check_dependencies() {
     echo -e "${CYAN}${TXT_CHECK_DEP}${PLAIN}"
     local install_cmd=""
     local update_cmd=""
+    local pkg_manager=""
+    
     if [[ -n $(command -v apt-get) ]]; then
+        pkg_manager="apt-get"
         install_cmd="apt-get -y -q install"
         update_cmd="apt-get -q update"
     elif [[ -n $(command -v yum) ]]; then
+        pkg_manager="yum"
         install_cmd="yum -y -q install"
         update_cmd="yum -q makecache"
     elif [[ -n $(command -v apk) ]]; then
+        pkg_manager="apk"
         install_cmd="apk add"
         update_cmd="apk update"
     else
+        echo -e "${RED}Error: No supported package manager found.${PLAIN}"
         return 1
     fi
-    local dependencies=(curl wget socat tar openssl cron awk sed)
+    
+    local dependencies=(curl wget socat tar openssl cron awk sed grep)
     local missing_dep=false
+    
     for dep in "${dependencies[@]}"; do
         if ! command -v $dep &> /dev/null; then missing_dep=true; break; fi
     done
+    
     if [ "$missing_dep" = true ]; then
         echo -e "${YELLOW}${TXT_MISSING_DEP}${PLAIN}"
         $update_cmd
@@ -434,21 +486,18 @@ check_dependencies() {
             if ! command -v $dep &> /dev/null; then
                 echo -e "${YELLOW}${TXT_INSTALLING_DEP}$dep ...${PLAIN}"
                 $install_cmd $dep
+                if [ $? -ne 0 ]; then
+                    echo -e "${RED}${TXT_INSTALL_FAIL}$dep${PLAIN}"
+                    return 1
+                fi
             fi
         done
     fi
+    
     if [[ -n $(command -v systemctl) ]]; then
         if ! systemctl is-active --quiet cron && ! systemctl is-active --quiet crond; then
              systemctl start cron 2>/dev/null || systemctl start crond 2>/dev/null
         fi
-    fi
-}
-
-check_port80() {
-    if command -v ss >/dev/null 2>&1; then
-        ss -tln | grep -q ":80 "
-    elif command -v netstat >/dev/null 2>&1; then
-        netstat -tuln | grep -q ":80 "
     fi
 }
 
@@ -478,15 +527,24 @@ install_acme_sh() {
                 USER_EMAIL=""
             fi
         done
+        
+        # Try curl install
         curl https://get.acme.sh | sh -s email="$USER_EMAIL"
+        
+        # Fallback to git if curl fails
         if [ $? -ne 0 ]; then
-            ! command -v git &> /dev/null && return
-            git clone https://github.com/acmesh-official/acme.sh.git ~/.acme.sh
-            cd ~/.acme.sh || exit
-            ./acme.sh --install -m "$USER_EMAIL"
-            cd ..
+            if command -v git >/dev/null 2>&1; then
+                git clone https://github.com/acmesh-official/acme.sh.git ~/.acme.sh
+                cd ~/.acme.sh || exit
+                ./acme.sh --install -m "$USER_EMAIL"
+                cd ..
+            else
+                echo -e "${RED}Error: acme.sh install failed and git not found.${PLAIN}"
+                return 1
+            fi
         fi
     fi
+    
     load_config
     register_accounts_logic "$USER_EMAIL"
     "$ACME_SH" --set-default-ca --server "$CA_SERVER"
@@ -699,7 +757,7 @@ issue_dns() {
                 while true; do
                     read -p "ENV > " env_in
                     [[ "$env_in" == "end" ]] && break
-                    if [[ "$env_in" =~ ^[a-zA-Z0-9_]+=[a-zA-Z0-9_.~-]+$ ]]; then
+                    if [[ "$env_in" =~ ^[a-zA-Z0-9_]+=[a-zA-Z0-9_.~=-]+$ ]]; then
                          val="${env_in#*=}"
                          if _valid_env_val "$val"; then
                             export "$env_in"
@@ -744,6 +802,7 @@ toggle_security() {
         ( if _sec_load_env; then exit 0; else exit 1; fi )
         if [ $? -eq 0 ]; then
             rm -f "$ENC_STORE" "$ENC_SIG"
+            # Cleanup old crons completely
             crontab -l 2>/dev/null | grep -v "${SCRIPT_NAME} --cron-auto" | crontab -
             "$ACME_SH" --upgrade --auto-upgrade >/dev/null 2>&1
             echo -e "${RED}${TXT_SEC_OFF}${PLAIN}"
@@ -782,8 +841,12 @@ toggle_security() {
         
         if [ $? -eq 0 ]; then
             _strip_conf
+            # Clean old tasks before adding new one
+            crontab -l 2>/dev/null | grep -v "${SCRIPT_NAME} --cron-auto" | crontab -
+            
             local job="20 3 * * * /bin/bash ${SCRIPT_PATH} --cron-auto"
-            (crontab -l 2>/dev/null | grep -v "${SCRIPT_NAME} --cron-auto"; echo "$job") | crontab -
+            (crontab -l 2>/dev/null; echo "$job") | crontab -
+            
             "$ACME_SH" --upgrade --auto-upgrade 0 >/dev/null 2>&1
             echo -e "${GREEN}${TXT_SEC_ON}${PLAIN}"
         else
