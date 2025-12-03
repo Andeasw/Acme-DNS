@@ -6,8 +6,9 @@
 # Optimized By: Prince 2025.10
 # ==============================================================
 
-#!/bin/bash
-
+# ==========================================
+# Config & Globals
+# ==========================================
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
@@ -31,6 +32,9 @@ ENC_SIG="${SCRIPT_DIR}/.sys_cache_sig"
 LOG_FILE="/var/log/acme_super_task.log"
 LOCK_FILE="/var/run/acme_super.lock"
 
+# ==========================================
+# Core Utilities
+# ==========================================
 _log() {
     (umask 077; [ ! -f "$LOG_FILE" ] && touch "$LOG_FILE")
     local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $1"
@@ -65,6 +69,9 @@ _ask_and_export() {
     export $var="$val"
 }
 
+# ==========================================
+# Security Logic
+# ==========================================
 _get_sys_entropy() {
     local _h=$(hostname) _l=${#_h} _v1=$((3000 - _l))
     local _c=$(echo "$_h" | grep -oE '[a-zA-Z]' | head -1)
@@ -111,6 +118,9 @@ _strip_conf() {
     sed -i '/Key/d;/Secret/d;/Token/d;/Password/d;/SAVED_/d' "$ACME_CONF"
 }
 
+# ==========================================
+# Validation & Checkers
+# ==========================================
 _valid_domain() { [[ "$1" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$ ]]; }
 _valid_path() { [[ "$1" == /* ]] && [[ ! "$1" =~ \.\. ]]; }
 _valid_env_val() { [[ "$1" =~ ^[a-zA-Z0-9_.~=+\/@-]+$ ]]; }
@@ -124,33 +134,83 @@ _port80_in_use() {
 
 check_dependencies() {
     echo -e "${CYAN}${TXT_CHECK_DEP}${PLAIN}"
-    local pm_cmd="" install_cmd=""
-    if _check_cmd apt-get; then pm_cmd="apt-get -q update"; install_cmd="apt-get -y -q install"
-    elif _check_cmd yum; then pm_cmd="yum -q makecache"; install_cmd="yum -y -q install"
-    elif _check_cmd apk; then pm_cmd="apk update"; install_cmd="apk add"
-    else echo -e "${RED}Error: No supported package manager.${PLAIN}"; return 1; fi
+    
+    # 1. 确定包管理器并设置更新/安装命令
+    local pm="" install_cmd="" update_cmd=""
+    if _check_cmd apt-get; then
+        pm="apt"; install_cmd="apt-get -y -q install"; update_cmd="apt-get -q update"
+    elif _check_cmd yum; then
+        pm="yum"; install_cmd="yum -y -q install"; update_cmd="yum -q makecache"
+    elif _check_cmd apk; then
+        pm="apk"; install_cmd="apk add --no-cache"; update_cmd="apk update"
+    else
+        echo -e "${RED}Error: No supported package manager (apt/yum/apk).${PLAIN}"; return 1
+    fi
 
-    local deps=(curl wget socat tar openssl cron awk sed grep)
-    local missing=false
-    for d in "${deps[@]}"; do _check_cmd $d || missing=true; done
+    # 2. 定义必须存在的二进制命令 (crontab 代表 cron 服务)
+    local bin_deps=("curl" "wget" "socat" "tar" "openssl" "crontab" "awk" "sed" "grep")
+    local missing_bin=false
+    for bin in "${bin_deps[@]}"; do
+        if ! _check_cmd "$bin"; then missing_bin=true; break; fi
+    done
 
-    if [ "$missing" = true ]; then
+    # 3. 如果缺失，根据包管理器选择正确的包名进行安装
+    if [ "$missing_bin" = true ]; then
         echo -e "${YELLOW}${TXT_MISSING_DEP}${PLAIN}"
-        $pm_cmd
-        for d in "${deps[@]}"; do
-            if ! _check_cmd $d; then
-                echo -e "${YELLOW}${TXT_INSTALLING_DEP}$d...${PLAIN}"
-                $install_cmd $d || { echo -e "${RED}${TXT_INSTALL_FAIL}$d${PLAIN}"; return 1; }
-            fi
-        done
+        $update_cmd >/dev/null 2>&1
+        
+        # 定义需要安装的包列表 (根据发行版区分名称)
+        local pkgs_to_install=("curl" "wget" "socat" "tar" "openssl" "sed" "grep")
+        
+        case $pm in
+            apt)
+                pkgs_to_install+=("cron" "gawk")
+                ;;
+            yum)
+                # CentOS 需要 epel-release 才能装 socat
+                if ! _check_cmd socat; then $install_cmd epel-release >/dev/null 2>&1; fi
+                pkgs_to_install+=("cronie" "gawk")
+                ;;
+            apk)
+                pkgs_to_install+=("dcron" "gawk")
+                ;;
+        esac
+        
+        echo -e "${CYAN}${TXT_INSTALLING_DEP}${pkgs_to_install[*]}...${PLAIN}"
+        $install_cmd "${pkgs_to_install[@]}"
+        
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}${TXT_INSTALL_FAIL}Package installation error.${PLAIN}"
+            return 1
+        fi
+    fi
+
+    # 4. 再次检查，确保所有依赖已就绪
+    for bin in "${bin_deps[@]}"; do
+        if ! _check_cmd "$bin"; then
+            echo -e "${RED}${TXT_INSTALL_FAIL}Command '$bin' not found after install.${PLAIN}"
+            return 1
+        fi
+    done
+
+    # 5. 确保 cron 服务启动
+    if _check_cmd systemctl; then
+        if ! systemctl is-active --quiet cron && ! systemctl is-active --quiet crond; then
+             systemctl enable cron 2>/dev/null || systemctl enable crond 2>/dev/null
+             systemctl start cron 2>/dev/null || systemctl start crond 2>/dev/null
+        fi
+    elif _check_cmd service; then
+        service cron start 2>/dev/null || service crond start 2>/dev/null
+    elif _check_cmd rc-service; then # Alpine
+        rc-service crond start 2>/dev/null
     fi
     
-    if _check_cmd systemctl; then
-        ! systemctl is-active --quiet cron && ! systemctl is-active --quiet crond && \
-        (systemctl start cron 2>/dev/null || systemctl start crond 2>/dev/null)
-    fi
+    return 0
 }
 
+# ==========================================
+# Cron Logic
+# ==========================================
 _cron_logic() {
     if [ -f "$LOCK_FILE" ] && kill -0 "$(cat "$LOCK_FILE")" 2>/dev/null; then exit 0; fi
     echo $$ > "$LOCK_FILE"
@@ -184,6 +244,9 @@ _cron_logic() {
 
 if [ "$1" == "--cron-auto" ]; then _cron_logic; exit 0; fi
 
+# ==========================================
+# Main Logic: Install & Config
+# ==========================================
 load_config() {
     if [ -f "$CONFIG_FILE" ]; then source "$CONFIG_FILE"; else
         CA_SERVER="letsencrypt"; KEY_LENGTH="2048"; USER_EMAIL=""; LANG_SET=""; SHORTCUT_NAME=""
@@ -218,9 +281,21 @@ install_acme_sh() {
         read -p "${TXT_INPUT_EMAIL}" USER_EMAIL
     done
     
+    # 尝试 curl 安装
     if ! curl https://get.acme.sh | sh -s email="$USER_EMAIL"; then
-        _check_cmd git || { echo -e "${RED}Error: Install failed & git missing.${PLAIN}"; return 1; }
-        git clone https://github.com/acmesh-official/acme.sh.git ~/.acme.sh && cd ~/.acme.sh && ./acme.sh --install -m "$USER_EMAIL" && cd ..
+        # 如果 curl 失败，尝试 git 安装
+        if _check_cmd git; then
+            git clone https://github.com/acmesh-official/acme.sh.git ~/.acme.sh && cd ~/.acme.sh && ./acme.sh --install -m "$USER_EMAIL" && cd ..
+        else
+            echo -e "${RED}Error: Install failed (curl error) & git not found.${PLAIN}"
+            return 1
+        fi
+    fi
+    
+    # 检查是否安装成功
+    if [ ! -f "$ACME_SH" ]; then
+         echo -e "${RED}Error: acme.sh install failed (File not found).${PLAIN}"
+         return 1
     fi
     
     load_config; save_config
@@ -243,6 +318,9 @@ _post_issue_cleanup() {
     [ -f "$ENC_STORE" ] && _strip_conf
 }
 
+# ==========================================
+# Operations: Issue & Deploy
+# ==========================================
 install_cert_menu() {
     [ ! -f "$ACME_SH" ] && echo -e "${RED}${TXT_WARN_NO_INIT}${PLAIN}" && return
     local DOMAIN=$1
@@ -381,6 +459,9 @@ toggle_security() {
     fi
 }
 
+# ==========================================
+# UI & Menu
+# ==========================================
 settings_menu() {
     while true; do
         echo -e "${CYAN}===== ${TXT_M2_TITLE} =====${PLAIN}\n1. ${TXT_M2_1}\n2. ${TXT_M2_2}\n3. ${TXT_M2_3}\n4. ${TXT_M2_4}\n5. ${TXT_M2_5}\n6. ${TXT_M2_6}\n8. ${TXT_M2_8}\n0. ${TXT_M_0}"
@@ -429,7 +510,7 @@ uninstall_menu() {
 
 load_language_strings() {
     if [ "$LANG_SET" == "en" ]; then
-        TXT_TITLE="Acme-DNS-Super V0.1.3 | Secure Cert Manager"
+        TXT_TITLE="Acme-DNS-Super V0.1.4 | Secure Cert Manager"
         TXT_STATUS_LABEL="Status"; TXT_SEC_LABEL="Security"; TXT_EMAIL_LABEL="Email"; TXT_NOT_SET="Not Set"
         TXT_HINT_INSTALL=">> Warning: acme.sh is NOT installed. Please run [1] first. <<"
         TXT_M_1="Init Environment (Install, Register & Shortcut)"
@@ -462,7 +543,7 @@ load_language_strings() {
         TXT_SEC_ON="Encryption ENABLED. Cron set to 03:20."; TXT_SEC_OFF="Encryption DISABLED. Cron restored."
         TXT_SEC_FAIL="Encryption Failed."; TXT_SEC_NO_KEYS="No keys found to encrypt."; TXT_ERR_ENV="Invalid ENV format."; TXT_ERR_PATH="Invalid Path."
     else
-        TXT_TITLE="Acme-DNS-Super V0.1.3 | 证书管理大师"
+        TXT_TITLE="Acme-DNS-Super V0.1.4 | 证书管理大师"
         TXT_STATUS_LABEL="状态"; TXT_SEC_LABEL="安全模式"; TXT_EMAIL_LABEL="邮箱"; TXT_NOT_SET="未设置"
         TXT_HINT_INSTALL=">> 警告：未安装 acme.sh，请先执行 [1] <<"
         TXT_M_1="环境初始化 (安装、注册、快捷键)"
