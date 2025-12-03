@@ -24,17 +24,121 @@ ACME_DIR="$HOME/.acme.sh"
 ACME_SH="$ACME_DIR/acme.sh"
 ACME_CONF="$ACME_DIR/account.conf"
 
-ENC_STORE="${SCRIPT_DIR}/.db_structure"
-SEC_KEY="${SCRIPT_DIR}/.sys_log"
-LOG_FILE="${SCRIPT_DIR}/cron.log"
+# Hidden Security Files
+ENC_STORE="${SCRIPT_DIR}/.db_structure"   # Encrypted Data
+ENC_SIG="${SCRIPT_DIR}/.db_integrity"     # HMAC Signature
+SEC_KEY="${SCRIPT_DIR}/.sys_log"          # Decryption Key
+LOG_FILE="${SCRIPT_DIR}/cron.log"         # Operation Log
 
 SEC_TMP=""
 
+# --- 1. Memory & File Sanitization ---
+
+# List of sensitive variables to unset
+SENSITIVE_VARS=(
+    "CF_Key" "CF_Email" "LUA_Key" "LUA_Email" 
+    "HE_Username" "HE_Password" 
+    "CLOUDNS_AUTH_ID" "CLOUDNS_SUB_AUTH_ID" "CLOUDNS_AUTH_PASSWORD" 
+    "PDNS_Url" "PDNS_ServerId" "PDNS_Token" "PDNS_Ttl" 
+    "One984_Username" "One984_Password" 
+    "DEDYN_TOKEN" "DYNV6_TOKEN" 
+    "Ali_Key" "Ali_Secret" 
+    "DP_Id" "DP_Key" 
+    "GD_Key" "GD_Secret" 
+    "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY" 
+    "LINODE_API_KEY"
+)
+
+_sanitize_memory() {
+    for var in "${SENSITIVE_VARS[@]}"; do
+        unset "$var"
+    done
+}
+
 cleanup() {
     [ -n "$SEC_TMP" ] && [ -f "$SEC_TMP" ] && rm -f "$SEC_TMP"
-    unset CF_Key CF_Email LUA_Key LUA_Email HE_Username HE_Password CLOUDNS_AUTH_ID CLOUDNS_SUB_AUTH_ID CLOUDNS_AUTH_PASSWORD PDNS_Url PDNS_ServerId PDNS_Token PDNS_Ttl One984_Username One984_Password DEDYN_TOKEN DYNV6_TOKEN Ali_Key Ali_Secret DP_Id DP_Key GD_Key GD_Secret AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY LINODE_API_KEY
+    _sanitize_memory
 }
 trap cleanup EXIT INT TERM
+
+# --- 2. Security Core (Crypto & Permissions) ---
+
+_sec_init() {
+    if [ ! -f "$SEC_KEY" ]; then
+        (umask 077; openssl rand -base64 32 > "$SEC_KEY")
+    fi
+    chmod 600 "$SEC_KEY"
+}
+
+_calc_hmac() {
+    # $1: File to hash, $2: Key File
+    openssl dgst -sha256 -hmac "$(cat "$2")" "$1" | awk '{print $2}'
+}
+
+_sec_save() {
+    # Input: Plaintext content via stdin
+    # Process: Encrypt -> Save -> Sign
+    _sec_init
+    local tmp_in=$(mktemp)
+    cat > "$tmp_in"
+    
+    # Encrypt
+    openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -salt -pass file:"$SEC_KEY" -in "$tmp_in" -out "$ENC_STORE"
+    local ret=$?
+    rm -f "$tmp_in"
+    
+    if [ $ret -eq 0 ]; then
+        # Generate HMAC signature for authentication
+        _calc_hmac "$ENC_STORE" "$SEC_KEY" > "$ENC_SIG"
+        chmod 600 "$ENC_STORE" "$ENC_SIG"
+        return 0
+    fi
+    return 1
+}
+
+_sec_load() {
+    if [ -f "$ENC_STORE" ] && [ -f "$SEC_KEY" ] && [ -f "$ENC_SIG" ]; then
+        # 1. Verify Integrity (HMAC)
+        local current_sig=$(_calc_hmac "$ENC_STORE" "$SEC_KEY")
+        local stored_sig=$(cat "$ENC_SIG")
+        
+        if [ "$current_sig" != "$stored_sig" ]; then
+            _log "SECURITY ALERT: HMAC mismatch! File tampering detected."
+            return 2 # Integrity Check Failed
+        fi
+
+        # 2. Decrypt
+        SEC_TMP=$(mktemp)
+        openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -pass file:"$SEC_KEY" -in "$ENC_STORE" > "$SEC_TMP" 2>/dev/null
+        
+        if [ $? -eq 0 ]; then
+            source "$SEC_TMP"
+            rm -f "$SEC_TMP"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+_strip_conf() {
+    [ ! -f "$ACME_CONF" ] && return
+    # Remove sensitive keys from acme.sh config to prevent plaintext storage
+    sed -i '/Key/d' "$ACME_CONF"
+    sed -i '/Secret/d' "$ACME_CONF"
+    sed -i '/Token/d' "$ACME_CONF"
+    sed -i '/Password/d' "$ACME_CONF"
+    sed -i '/SAVED_/d' "$ACME_CONF"
+}
+
+_log() {
+    if [ ! -f "$LOG_FILE" ]; then
+        touch "$LOG_FILE"
+        chmod 600 "$LOG_FILE"
+    fi
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
+}
+
+# --- 3. Validation Helpers ---
 
 _valid_domain() {
     [[ "$1" =~ ^[a-zA-Z0-9.-]+$ ]] && return 0 || return 1
@@ -49,38 +153,7 @@ _valid_env_val() {
     return 0
 }
 
-_sec_init() {
-    if [ ! -f "$SEC_KEY" ]; then
-        (umask 077; openssl rand -base64 32 > "$SEC_KEY")
-    fi
-    chmod 600 "$SEC_KEY"
-}
-
-_strip_conf() {
-    [ ! -f "$ACME_CONF" ] && return
-    sed -i '/Key/d' "$ACME_CONF"
-    sed -i '/Secret/d' "$ACME_CONF"
-    sed -i '/Token/d' "$ACME_CONF"
-    sed -i '/Password/d' "$ACME_CONF"
-    sed -i '/SAVED_/d' "$ACME_CONF"
-}
-
-_sec_load() {
-    if [ -f "$ENC_STORE" ] && [ -f "$SEC_KEY" ]; then
-        SEC_TMP=$(mktemp)
-        openssl enc -d -aes-256-cbc -pbkdf2 -pass file:"$SEC_KEY" -in "$ENC_STORE" > "$SEC_TMP" 2>/dev/null
-        if [ $? -eq 0 ]; then
-            source "$SEC_TMP"
-            rm -f "$SEC_TMP"
-            return 0
-        fi
-    fi
-    return 1
-}
-
-_log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
-}
+# --- 4. Cron Logic ---
 
 _cron_logic() {
     if [ ! -d "$ACME_DIR" ]; then exit 0; fi
@@ -99,10 +172,10 @@ _cron_logic() {
                     _log "Renewing (Encrypted): $domain"
                     "$ACME_SH" --renew -d "$domain" --force >/dev/null 2>&1
                     if [ $? -eq 0 ]; then _log "Success: $domain"; else _log "Fail: $domain"; fi
-                    cleanup
+                    cleanup # Unset vars immediately
                     _strip_conf
                 else
-                    _log "ERROR: Decryption failed for $domain renewal"
+                    _log "CRITICAL: Decryption or HMAC failed for $domain"
                 fi
             else
                 _log "Renewing (Standard): $domain"
@@ -116,6 +189,8 @@ if [ "$1" == "--cron-auto" ]; then
     _cron_logic
     exit 0
 fi
+
+# --- 5. Configuration & UI ---
 
 load_config() {
     if [ -f "$CONFIG_FILE" ]; then
@@ -141,7 +216,7 @@ EOF
 
 load_language_strings() {
     if [ "$LANG_SET" == "en" ]; then
-        TXT_TITLE="Acme-DNS-Super V0.0.6 | Cert Manager"
+        TXT_TITLE="Acme-DNS-Super V0.0.7 | Secure Cert Manager"
         TXT_STATUS_LABEL="Status"
         TXT_SEC_LABEL="Security"
         TXT_EMAIL_LABEL="Email"
@@ -217,14 +292,14 @@ load_language_strings() {
         TXT_UN_2="Full Uninstall"
         TXT_UN_CONFIRM="Type 'DELETE' to confirm: "
         TXT_UN_DONE="Uninstalled."
-        TXT_SEC_ON="Encryption ENABLED. account.conf sanitized. Custom cron (03:10) set."
-        TXT_SEC_OFF="Encryption DISABLED. Custom cron removed. acme.sh cron restored."
+        TXT_SEC_ON="Encryption ENABLED (AES-256+HMAC). Cron set."
+        TXT_SEC_OFF="Encryption DISABLED. Cron restored."
         TXT_SEC_FAIL="Encryption Failed."
         TXT_SEC_NO_KEYS="No keys found to encrypt."
-        TXT_ERR_ENV="Invalid ENV. Format: KEY=VALUE. No special chars allowed."
+        TXT_ERR_ENV="Invalid ENV. Format: KEY=VALUE. No special chars."
         TXT_ERR_PATH="Invalid Path. Must be absolute, no traversal."
     else
-        TXT_TITLE="Acme-DNS-Super V0.0.6 | 证书管理大师"
+        TXT_TITLE="Acme-DNS-Super V0.0.7 | 证书管理大师"
         TXT_STATUS_LABEL="状态"
         TXT_SEC_LABEL="安全模式"
         TXT_EMAIL_LABEL="邮箱"
@@ -300,7 +375,7 @@ load_language_strings() {
         TXT_UN_2="彻底卸载"
         TXT_UN_CONFIRM="输入 'DELETE' 确认: "
         TXT_UN_DONE="已卸载。"
-        TXT_SEC_ON="加密模式已开启。已清理 account.conf。每日 03:10 自动加密续期。"
+        TXT_SEC_ON="加密模式已开启 (HMAC校验)。已清理明文。每日03:10自动加密续期。"
         TXT_SEC_OFF="加密模式已关闭。任务已移除，恢复 acme.sh 原生续期。"
         TXT_SEC_FAIL="加密失败。未检测到 Key 或 OpenSSL 错误。"
         TXT_SEC_NO_KEYS="未检测到有效 Key，无法执行加密。"
@@ -353,7 +428,7 @@ check_dependencies() {
     else
         return 1
     fi
-    local dependencies=(curl wget socat tar openssl cron)
+    local dependencies=(curl wget socat tar openssl cron awk sed)
     local missing_dep=false
     for dep in "${dependencies[@]}"; do
         if ! command -v $dep &> /dev/null; then missing_dep=true; break; fi
@@ -543,7 +618,7 @@ issue_dns() {
     echo -e "0. Back"
     read -p "${TXT_SELECT}" DNS_OPT
     
-    unset CF_Key CF_Email LUA_Key LUA_Email HE_Username HE_Password CLOUDNS_AUTH_ID CLOUDNS_SUB_AUTH_ID CLOUDNS_AUTH_PASSWORD PDNS_Url PDNS_ServerId PDNS_Token PDNS_Ttl One984_Username One984_Password DEDYN_TOKEN DYNV6_TOKEN Ali_Key Ali_Secret
+    _sanitize_memory
     
     local dns_type=""
     case $DNS_OPT in
@@ -658,24 +733,25 @@ issue_dns() {
     if [ -f "$ENC_STORE" ]; then
         cleanup
         _strip_conf
+    else
+        _sanitize_memory
     fi
 }
 
 toggle_security() {
     if [ -f "$ENC_STORE" ]; then
         if _sec_load; then
-            rm -f "$ENC_STORE" "$SEC_KEY"
+            rm -f "$ENC_STORE" "$ENC_SIG" "$SEC_KEY"
             crontab -l 2>/dev/null | grep -v "${SCRIPT_NAME} --cron-auto" | crontab -
             "$ACME_SH" --upgrade --auto-upgrade >/dev/null 2>&1
             cleanup
             echo -e "${RED}${TXT_SEC_OFF}${PLAIN}"
         else
-            echo -e "${RED}Decrypt failed.${PLAIN}"
+            echo -e "${RED}Decrypt/Integrity failed.${PLAIN}"
         fi
     else
         _sec_init
         local dump=""
-        local vars_to_check="CF_Key CF_Email LUA_Key LUA_Email HE_Username HE_Password CLOUDNS_AUTH_ID CLOUDNS_SUB_AUTH_ID CLOUDNS_AUTH_PASSWORD PDNS_Url PDNS_ServerId PDNS_Token PDNS_Ttl One984_Username One984_Password DEDYN_TOKEN DYNV6_TOKEN Ali_Key Ali_Secret DP_Id DP_Key GD_Key GD_Secret AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY LINODE_API_KEY"
         
         if [ -f "$ACME_CONF" ]; then
             while IFS='=' read -r k v; do
@@ -689,7 +765,7 @@ toggle_security() {
             done < "$ACME_CONF"
         fi
 
-        for v in $vars_to_check; do
+        for v in "${SENSITIVE_VARS[@]}"; do
             val="${!v}"
             if [ -n "$val" ]; then
                 dump="${dump}export $v='$val'\n"
@@ -701,9 +777,9 @@ toggle_security() {
             return
         fi
 
-        echo -e "$dump" | openssl enc -aes-256-cbc -salt -pbkdf2 -pass file:"$SEC_KEY" -out "$ENC_STORE"
+        echo -e "$dump" | _sec_save
+        
         if [ $? -eq 0 ]; then
-            chmod 600 "$ENC_STORE"
             _strip_conf
             local job="10 3 * * * /bin/bash ${SCRIPT_PATH} --cron-auto"
             (crontab -l 2>/dev/null | grep -v "${SCRIPT_NAME} --cron-auto"; echo "$job") | crontab -
@@ -823,7 +899,7 @@ uninstall_menu() {
     echo "2. ${TXT_UN_2}"
     read -p "${TXT_SELECT}" opt
     if [ "$opt" == "1" ]; then
-        rm -f "$CONFIG_FILE" "$ENC_STORE" "$SEC_KEY"
+        rm -f "$CONFIG_FILE" "$ENC_STORE" "$ENC_SIG" "$SEC_KEY"
         [ -n "$SHORTCUT_NAME" ] && rm -f "/usr/bin/$SHORTCUT_NAME"
         cleanup
         echo -e "${GREEN}${TXT_UN_DONE}${PLAIN}"
@@ -832,7 +908,7 @@ uninstall_menu() {
         read -p "${TXT_UN_CONFIRM}" confirm
         if [ "$confirm" == "DELETE" ]; then
             [ -f "$ACME_SH" ] && "$ACME_SH" --uninstall
-            rm -rf "$ACME_DIR" "$CONFIG_FILE" "$ENC_STORE" "$SEC_KEY" "$LOG_FILE"
+            rm -rf "$ACME_DIR" "$CONFIG_FILE" "$ENC_STORE" "$ENC_SIG" "$SEC_KEY" "$LOG_FILE"
             [ -n "$SHORTCUT_NAME" ] && rm -f "/usr/bin/$SHORTCUT_NAME"
             cleanup
             crontab -l 2>/dev/null | grep -v "${SCRIPT_NAME} --cron-auto" | crontab -
@@ -851,7 +927,7 @@ show_menu() {
     echo -e "${TXT_STATUS_LABEL}: CA: ${GREEN}${CA_SERVER}${PLAIN} | Key: ${GREEN}${KEY_LENGTH}${PLAIN} | ${TXT_EMAIL_LABEL}: ${GREEN}${USER_EMAIL:-${TXT_NOT_SET}}${PLAIN}"
     echo -e "${BLUE}--------------------------------------------------------------${PLAIN}"
     if [ ! -f "$ACME_SH" ]; then echo -e "${RED}${TXT_HINT_INSTALL}${PLAIN}"; fi
-    if [ -f "$ENC_STORE" ]; then echo -e "${TXT_SEC_LABEL}: ${GREEN}ON (Encrypted)${PLAIN}"; else echo -e "${TXT_SEC_LABEL}: ${YELLOW}OFF (Standard)${PLAIN}"; fi
+    if [ -f "$ENC_STORE" ]; then echo -e "${TXT_SEC_LABEL}: ${GREEN}ON (AES-256+HMAC)${PLAIN}"; else echo -e "${TXT_SEC_LABEL}: ${YELLOW}OFF (Standard)${PLAIN}"; fi
     echo -e " 1. ${TXT_M_1}"
     echo -e " 2. ${TXT_M_2}"
     echo -e "--------------------------------------------------------------"
