@@ -24,44 +24,36 @@ ACME_DIR="$HOME/.acme.sh"
 ACME_SH="$ACME_DIR/acme.sh"
 ACME_CONF="$ACME_DIR/account.conf"
 
-# Hidden Security Files
-ENC_STORE="${SCRIPT_DIR}/.db_structure"   # Encrypted Data
-ENC_SIG="${SCRIPT_DIR}/.db_integrity"     # HMAC Signature
-SEC_KEY="${SCRIPT_DIR}/.sys_log"          # Decryption Key
-LOG_FILE="${SCRIPT_DIR}/cron.log"         # Operation Log
+ENC_STORE="${SCRIPT_DIR}/.db_structure"
+ENC_SIG="${SCRIPT_DIR}/.db_integrity"
+SEC_KEY="${SCRIPT_DIR}/.sys_log"
+LOG_FILE="${SCRIPT_DIR}/cron.log"
 
-SEC_TMP=""
+# --- Security & Helper Functions ---
 
-# --- 1. Memory & File Sanitization ---
-
-# List of sensitive variables to unset
-SENSITIVE_VARS=(
-    "CF_Key" "CF_Email" "LUA_Key" "LUA_Email" 
-    "HE_Username" "HE_Password" 
-    "CLOUDNS_AUTH_ID" "CLOUDNS_SUB_AUTH_ID" "CLOUDNS_AUTH_PASSWORD" 
-    "PDNS_Url" "PDNS_ServerId" "PDNS_Token" "PDNS_Ttl" 
-    "One984_Username" "One984_Password" 
-    "DEDYN_TOKEN" "DYNV6_TOKEN" 
-    "Ali_Key" "Ali_Secret" 
-    "DP_Id" "DP_Key" 
-    "GD_Key" "GD_Secret" 
-    "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY" 
-    "LINODE_API_KEY"
-)
-
-_sanitize_memory() {
-    for var in "${SENSITIVE_VARS[@]}"; do
-        unset "$var"
-    done
+_log() {
+    local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+    echo "$msg" >> "$LOG_FILE"
+    # Use system logger for critical cron errors
+    if [[ "$1" == *"CRITICAL"* ]]; then
+        logger -t "ACME_SUPER" -p user.crit "$msg"
+    fi
 }
 
 cleanup() {
-    [ -n "$SEC_TMP" ] && [ -f "$SEC_TMP" ] && rm -f "$SEC_TMP"
-    _sanitize_memory
+    # Secure exit: No temp files to clean since we use process substitution
+    # But we force unset just in case
+    unset SEC_KEY_PASS
 }
 trap cleanup EXIT INT TERM
 
-# --- 2. Security Core (Crypto & Permissions) ---
+_self_check() {
+    if [ ! -f "$ACME_SH" ]; then
+        _log "CRITICAL: acme.sh not found at $ACME_SH"
+        return 1
+    fi
+    return 0
+}
 
 _sec_init() {
     if [ ! -f "$SEC_KEY" ]; then
@@ -71,24 +63,20 @@ _sec_init() {
 }
 
 _calc_hmac() {
-    # $1: File to hash, $2: Key File
     openssl dgst -sha256 -hmac "$(cat "$2")" "$1" | awk '{print $2}'
 }
 
 _sec_save() {
-    # Input: Plaintext content via stdin
-    # Process: Encrypt -> Save -> Sign
+    # stdin -> encrypt -> file
     _sec_init
     local tmp_in=$(mktemp)
     cat > "$tmp_in"
     
-    # Encrypt
     openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -salt -pass file:"$SEC_KEY" -in "$tmp_in" -out "$ENC_STORE"
     local ret=$?
     rm -f "$tmp_in"
     
     if [ $ret -eq 0 ]; then
-        # Generate HMAC signature for authentication
         _calc_hmac "$ENC_STORE" "$SEC_KEY" > "$ENC_SIG"
         chmod 600 "$ENC_STORE" "$ENC_SIG"
         return 0
@@ -96,49 +84,33 @@ _sec_save() {
     return 1
 }
 
-_sec_load() {
+_sec_load_env() {
+    # Loads encrypted env vars into current shell
     if [ -f "$ENC_STORE" ] && [ -f "$SEC_KEY" ] && [ -f "$ENC_SIG" ]; then
-        # 1. Verify Integrity (HMAC)
         local current_sig=$(_calc_hmac "$ENC_STORE" "$SEC_KEY")
         local stored_sig=$(cat "$ENC_SIG")
         
         if [ "$current_sig" != "$stored_sig" ]; then
-            _log "SECURITY ALERT: HMAC mismatch! File tampering detected."
-            return 2 # Integrity Check Failed
+            _log "CRITICAL: HMAC Integrity Check Failed! Encrypted store tampered."
+            return 2
         fi
 
-        # 2. Decrypt
-        SEC_TMP=$(mktemp)
-        openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -pass file:"$SEC_KEY" -in "$ENC_STORE" > "$SEC_TMP" 2>/dev/null
-        
-        if [ $? -eq 0 ]; then
-            source "$SEC_TMP"
-            rm -f "$SEC_TMP"
-            return 0
-        fi
+        # Use Process Substitution to avoid writing plaintext to disk
+        source <(openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -pass file:"$SEC_KEY" -in "$ENC_STORE")
+        return 0
     fi
     return 1
 }
 
 _strip_conf() {
     [ ! -f "$ACME_CONF" ] && return
-    # Remove sensitive keys from acme.sh config to prevent plaintext storage
+    # Sanitize account.conf to remove leakage
     sed -i '/Key/d' "$ACME_CONF"
     sed -i '/Secret/d' "$ACME_CONF"
     sed -i '/Token/d' "$ACME_CONF"
     sed -i '/Password/d' "$ACME_CONF"
     sed -i '/SAVED_/d' "$ACME_CONF"
 }
-
-_log() {
-    if [ ! -f "$LOG_FILE" ]; then
-        touch "$LOG_FILE"
-        chmod 600 "$LOG_FILE"
-    fi
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
-}
-
-# --- 3. Validation Helpers ---
 
 _valid_domain() {
     [[ "$1" =~ ^[a-zA-Z0-9.-]+$ ]] && return 0 || return 1
@@ -149,40 +121,46 @@ _valid_path() {
 }
 
 _valid_env_val() {
-    if [[ "$1" =~ [;\`\&\|\$] ]]; then return 1; fi
-    return 0
+    [[ "$1" =~ [;\`\&\|\$] ]] && return 1 || return 0
 }
 
-# --- 4. Cron Logic ---
+# --- Cron Logic ---
 
 _cron_logic() {
-    if [ ! -d "$ACME_DIR" ]; then exit 0; fi
+    _self_check || exit 1
     
-    for d in "$ACME_DIR"/*/; do
-        domain=$(basename "$d")
-        [ "$domain" == "http.header" ] && continue
-        
-        cert_file="$d/$domain.cer"
-        if [ ! -f "$cert_file" ]; then cert_file="$d/${domain}.cer"; fi
-        if [ ! -f "$cert_file" ]; then continue; fi
-        
-        if ! openssl x509 -checkend 864000 -noout -in "$cert_file" >/dev/null 2>&1; then
-            if [ -f "$ENC_STORE" ]; then
-                if _sec_load; then
-                    _log "Renewing (Encrypted): $domain"
-                    "$ACME_SH" --renew -d "$domain" --force >/dev/null 2>&1
-                    if [ $? -eq 0 ]; then _log "Success: $domain"; else _log "Fail: $domain"; fi
-                    cleanup # Unset vars immediately
-                    _strip_conf
-                else
-                    _log "CRITICAL: Decryption or HMAC failed for $domain"
-                fi
+    # Use subshell to isolate environment
+    (
+        if [ -f "$ENC_STORE" ]; then
+            if _sec_load_env; then
+                _log "Info: Environment loaded successfully (Encrypted)."
             else
-                _log "Renewing (Standard): $domain"
-                "$ACME_SH" --renew -d "$domain" --force >/dev/null 2>&1
+                _log "CRITICAL: Failed to load encrypted environment. Aborting renewal."
+                exit 1
             fi
         fi
-    done
+
+        for d in "$ACME_DIR"/*/; do
+            domain=$(basename "$d")
+            [ "$domain" == "http.header" ] && continue
+            
+            cert_file="$d/$domain.cer"
+            if [ ! -f "$cert_file" ]; then cert_file="$d/${domain}.cer"; fi
+            if [ ! -f "$cert_file" ]; then continue; fi
+            
+            if ! openssl x509 -checkend 864000 -noout -in "$cert_file" >/dev/null 2>&1; then
+                _log "Renewing: $domain"
+                "$ACME_SH" --renew -d "$domain" --force >> "$LOG_FILE" 2>&1
+                if [ $? -eq 0 ]; then
+                    _log "Success: $domain"
+                    # Only strip conf if renewal succeeded (acme.sh might have written keys)
+                    [ -f "$ENC_STORE" ] && _strip_conf
+                else
+                    _log "Error: Renewal failed for $domain"
+                fi
+            fi
+        done
+    )
 }
 
 if [ "$1" == "--cron-auto" ]; then
@@ -190,7 +168,7 @@ if [ "$1" == "--cron-auto" ]; then
     exit 0
 fi
 
-# --- 5. Configuration & UI ---
+# --- Configuration ---
 
 load_config() {
     if [ -f "$CONFIG_FILE" ]; then
@@ -216,7 +194,7 @@ EOF
 
 load_language_strings() {
     if [ "$LANG_SET" == "en" ]; then
-        TXT_TITLE="Acme-DNS-Super V0.0.7 | Secure Cert Manager"
+        TXT_TITLE="Acme-DNS-Super V0.0.8 | Secure Cert Manager"
         TXT_STATUS_LABEL="Status"
         TXT_SEC_LABEL="Security"
         TXT_EMAIL_LABEL="Email"
@@ -292,14 +270,14 @@ load_language_strings() {
         TXT_UN_2="Full Uninstall"
         TXT_UN_CONFIRM="Type 'DELETE' to confirm: "
         TXT_UN_DONE="Uninstalled."
-        TXT_SEC_ON="Encryption ENABLED (AES-256+HMAC). Cron set."
-        TXT_SEC_OFF="Encryption DISABLED. Cron restored."
+        TXT_SEC_ON="Encryption ENABLED (AES-256+HMAC)."
+        TXT_SEC_OFF="Encryption DISABLED."
         TXT_SEC_FAIL="Encryption Failed."
         TXT_SEC_NO_KEYS="No keys found to encrypt."
-        TXT_ERR_ENV="Invalid ENV. Format: KEY=VALUE. No special chars."
-        TXT_ERR_PATH="Invalid Path. Must be absolute, no traversal."
+        TXT_ERR_ENV="Invalid ENV format."
+        TXT_ERR_PATH="Invalid Path."
     else
-        TXT_TITLE="Acme-DNS-Super V0.0.7 | 证书管理大师"
+        TXT_TITLE="Acme-DNS-Super V0.0.8 | 证书管理大师"
         TXT_STATUS_LABEL="状态"
         TXT_SEC_LABEL="安全模式"
         TXT_EMAIL_LABEL="邮箱"
@@ -598,153 +576,166 @@ issue_http() {
 issue_dns() {
     if [ ! -f "$ACME_SH" ]; then echo -e "${RED}${TXT_WARN_NO_INIT}${PLAIN}"; return; fi
     
-    [ -f "$ENC_STORE" ] && _sec_load
+    # Use Subshell for Environment Isolation
+    (
+        if [ -f "$ENC_STORE" ]; then
+            if _sec_load_env; then
+                echo -e "${CYAN}Info: Encrypted keys loaded.${PLAIN}"
+            else
+                echo -e "${RED}Error: Failed to decrypt keys.${PLAIN}"
+                exit 1
+            fi
+        fi
 
-    echo -e "${YELLOW}>>> DNS API Mode${PLAIN}"
-    read -p "${TXT_INPUT_DOMAIN}" DOMAIN
-    if ! _valid_domain "$DOMAIN"; then echo -e "${RED}${TXT_DOMAIN_EMPTY}${PLAIN}"; cleanup; return; fi
+        echo -e "${YELLOW}>>> DNS API Mode${PLAIN}"
+        read -p "${TXT_INPUT_DOMAIN}" DOMAIN
+        if ! _valid_domain "$DOMAIN"; then echo -e "${RED}${TXT_DOMAIN_EMPTY}${PLAIN}"; exit 1; fi
 
-    echo -e "${TXT_DNS_SEL}"
-    echo -e "1. CloudFlare"
-    echo -e "2. LuaDNS"
-    echo -e "3. Hurricane Electric (he.net)"
-    echo -e "4. ClouDNS"
-    echo -e "5. PowerDNS"
-    echo -e "6. 1984Hosting"
-    echo -e "7. deSEC.io"
-    echo -e "8. dynv6"
-    echo -e "9. AliYun"
-    echo -e "10. ${TXT_DNS_MANUAL}"
-    echo -e "0. Back"
-    read -p "${TXT_SELECT}" DNS_OPT
-    
-    _sanitize_memory
-    
-    local dns_type=""
-    case $DNS_OPT in
-        1)
-            read -s -p "CloudFlare Global API Key: " CF_Key; echo
-            read -p "CloudFlare Email: " CF_Email
-            if ! _valid_env_val "$CF_Key"; then echo "Invalid Input"; cleanup; return; fi
-            export CF_Key="$CF_Key"
-            export CF_Email="$CF_Email"
-            dns_type="dns_cf"
-            ;;
-        2)
-            read -s -p "LuaDNS API Key: " LUA_Key; echo
-            read -p "LuaDNS Email: " LUA_Email
-            if ! _valid_env_val "$LUA_Key"; then echo "Invalid Input"; cleanup; return; fi
-            export LUA_Key="$LUA_Key"
-            export LUA_Email="$LUA_Email"
-            dns_type="dns_lua"
-            ;;
-        3)
-            read -p "HE.net Username: " HE_Username
-            read -s -p "HE.net Password: " HE_Password; echo
-            if ! _valid_env_val "$HE_Password"; then echo "Invalid Input"; cleanup; return; fi
-            export HE_Username="$HE_Username"
-            export HE_Password="$HE_Password"
-            dns_type="dns_he"
-            ;;
-        4)
-            read -p "ClouDNS Auth ID: " CLOUDNS_AUTH_ID
-            read -p "ClouDNS Sub Auth ID (Opt): " CLOUDNS_SUB_AUTH_ID
-            read -s -p "ClouDNS Password: " CLOUDNS_AUTH_PASSWORD; echo
-            if ! _valid_env_val "$CLOUDNS_AUTH_PASSWORD"; then echo "Invalid Input"; cleanup; return; fi
-            export CLOUDNS_AUTH_ID="$CLOUDNS_AUTH_ID"
-            export CLOUDNS_SUB_AUTH_ID="$CLOUDNS_SUB_AUTH_ID"
-            export CLOUDNS_AUTH_PASSWORD="$CLOUDNS_AUTH_PASSWORD"
-            dns_type="dns_cloudns"
-            ;;
-        5)
-            read -p "PowerDNS URL: " PDNS_Url
-            read -p "PowerDNS ServerId: " PDNS_ServerId
-            read -s -p "PowerDNS Token: " PDNS_Token; echo
-            read -p "PowerDNS TTL (60): " PDNS_Ttl
-            if ! _valid_env_val "$PDNS_Token"; then echo "Invalid Input"; cleanup; return; fi
-            export PDNS_Url="$PDNS_Url"
-            export PDNS_ServerId="$PDNS_ServerId"
-            export PDNS_Token="$PDNS_Token"
-            export PDNS_Ttl="${PDNS_Ttl:-60}"
-            dns_type="dns_pdns"
-            ;;
-        6)
-            read -p "1984Hosting Username: " One984_Username
-            read -s -p "1984Hosting Password: " One984_Password; echo
-            if ! _valid_env_val "$One984_Password"; then echo "Invalid Input"; cleanup; return; fi
-            export One984_Username="$One984_Username"
-            export One984_Password="$One984_Password"
-            dns_type="dns_1984hosting"
-            ;;
-        7)
-            read -s -p "deSEC.io Token: " DEDYN_TOKEN; echo
-            if ! _valid_env_val "$DEDYN_TOKEN"; then echo "Invalid Input"; cleanup; return; fi
-            export DEDYN_TOKEN="$DEDYN_TOKEN"
-            dns_type="dns_desec"
-            ;;
-        8)
-            read -s -p "dynv6 Token: " DYNV6_TOKEN; echo
-            if ! _valid_env_val "$DYNV6_TOKEN"; then echo "Invalid Input"; cleanup; return; fi
-            export DYNV6_TOKEN="$DYNV6_TOKEN"
-            dns_type="dns_dynv6"
-            ;;
-        9)
-            read -p "AliYun Key: " Ali_Key
-            read -s -p "AliYun Secret: " Ali_Secret; echo
-            if ! _valid_env_val "$Ali_Secret"; then echo "Invalid Input"; cleanup; return; fi
-            export Ali_Key="$Ali_Key"
-            export Ali_Secret="$Ali_Secret"
-            dns_type="dns_ali"
-            ;;
-        10)
-            echo -e "${YELLOW}ENV (Key=Value), type 'end' to finish.${PLAIN}"
-            while true; do
-                read -p "ENV > " env_in
-                [[ "$env_in" == "end" ]] && break
-                if [[ "$env_in" =~ ^[a-zA-Z_][a-zA-Z0-9_]*=.*$ ]]; then
-                     val="${env_in#*=}"
-                     if _valid_env_val "$val"; then
-                        export "$env_in"
-                     else
+        echo -e "${TXT_DNS_SEL}"
+        echo -e "1. CloudFlare"
+        echo -e "2. LuaDNS"
+        echo -e "3. Hurricane Electric (he.net)"
+        echo -e "4. ClouDNS"
+        echo -e "5. PowerDNS"
+        echo -e "6. 1984Hosting"
+        echo -e "7. deSEC.io"
+        echo -e "8. dynv6"
+        echo -e "9. AliYun"
+        echo -e "10. ${TXT_DNS_MANUAL}"
+        echo -e "0. Back"
+        read -p "${TXT_SELECT}" DNS_OPT
+        
+        case $DNS_OPT in
+            1)
+                read -s -p "CloudFlare Global API Key: " CF_Key; echo
+                read -p "CloudFlare Email: " CF_Email
+                if ! _valid_env_val "$CF_Key"; then echo "Invalid Input"; exit 1; fi
+                export CF_Key="$CF_Key"
+                export CF_Email="$CF_Email"
+                dns_type="dns_cf"
+                ;;
+            2)
+                read -s -p "LuaDNS API Key: " LUA_Key; echo
+                read -p "LuaDNS Email: " LUA_Email
+                if ! _valid_env_val "$LUA_Key"; then echo "Invalid Input"; exit 1; fi
+                export LUA_Key="$LUA_Key"
+                export LUA_Email="$LUA_Email"
+                dns_type="dns_lua"
+                ;;
+            3)
+                read -p "HE.net Username: " HE_Username
+                read -s -p "HE.net Password: " HE_Password; echo
+                if ! _valid_env_val "$HE_Password"; then echo "Invalid Input"; exit 1; fi
+                export HE_Username="$HE_Username"
+                export HE_Password="$HE_Password"
+                dns_type="dns_he"
+                ;;
+            4)
+                read -p "ClouDNS Auth ID: " CLOUDNS_AUTH_ID
+                read -p "ClouDNS Sub Auth ID (Opt): " CLOUDNS_SUB_AUTH_ID
+                read -s -p "ClouDNS Password: " CLOUDNS_AUTH_PASSWORD; echo
+                if ! _valid_env_val "$CLOUDNS_AUTH_PASSWORD"; then echo "Invalid Input"; exit 1; fi
+                export CLOUDNS_AUTH_ID="$CLOUDNS_AUTH_ID"
+                export CLOUDNS_SUB_AUTH_ID="$CLOUDNS_SUB_AUTH_ID"
+                export CLOUDNS_AUTH_PASSWORD="$CLOUDNS_AUTH_PASSWORD"
+                dns_type="dns_cloudns"
+                ;;
+            5)
+                read -p "PowerDNS URL: " PDNS_Url
+                read -p "PowerDNS ServerId: " PDNS_ServerId
+                read -s -p "PowerDNS Token: " PDNS_Token; echo
+                read -p "PowerDNS TTL (60): " PDNS_Ttl
+                if ! _valid_env_val "$PDNS_Token"; then echo "Invalid Input"; exit 1; fi
+                export PDNS_Url="$PDNS_Url"
+                export PDNS_ServerId="$PDNS_ServerId"
+                export PDNS_Token="$PDNS_Token"
+                export PDNS_Ttl="${PDNS_Ttl:-60}"
+                dns_type="dns_pdns"
+                ;;
+            6)
+                read -p "1984Hosting Username: " One984_Username
+                read -s -p "1984Hosting Password: " One984_Password; echo
+                if ! _valid_env_val "$One984_Password"; then echo "Invalid Input"; exit 1; fi
+                export One984_Username="$One984_Username"
+                export One984_Password="$One984_Password"
+                dns_type="dns_1984hosting"
+                ;;
+            7)
+                read -s -p "deSEC.io Token: " DEDYN_TOKEN; echo
+                if ! _valid_env_val "$DEDYN_TOKEN"; then echo "Invalid Input"; exit 1; fi
+                export DEDYN_TOKEN="$DEDYN_TOKEN"
+                dns_type="dns_desec"
+                ;;
+            8)
+                read -s -p "dynv6 Token: " DYNV6_TOKEN; echo
+                if ! _valid_env_val "$DYNV6_TOKEN"; then echo "Invalid Input"; exit 1; fi
+                export DYNV6_TOKEN="$DYNV6_TOKEN"
+                dns_type="dns_dynv6"
+                ;;
+            9)
+                read -p "AliYun Key: " Ali_Key
+                read -s -p "AliYun Secret: " Ali_Secret; echo
+                if ! _valid_env_val "$Ali_Secret"; then echo "Invalid Input"; exit 1; fi
+                export Ali_Key="$Ali_Key"
+                export Ali_Secret="$Ali_Secret"
+                dns_type="dns_ali"
+                ;;
+            10)
+                echo -e "${YELLOW}ENV (Key=Value), type 'end' to finish.${PLAIN}"
+                while true; do
+                    read -p "ENV > " env_in
+                    [[ "$env_in" == "end" ]] && break
+                    if [[ "$env_in" =~ ^[a-zA-Z_][a-zA-Z0-9_]*=.*$ ]]; then
+                         val="${env_in#*=}"
+                         if _valid_env_val "$val"; then
+                            export "$env_in"
+                         else
+                            echo -e "${RED}${TXT_ERR_ENV}${PLAIN}"
+                         fi
+                    else
                         echo -e "${RED}${TXT_ERR_ENV}${PLAIN}"
-                     fi
-                else
-                    echo -e "${RED}${TXT_ERR_ENV}${PLAIN}"
-                fi
-            done
-            read -p "Plugin Name (e.g. dns_dp): " dns_type
-            ;;
-        0) cleanup; return ;;
-        *) echo -e "${RED}${TXT_INVALID}${PLAIN}"; cleanup; return ;;
-    esac
-    [ -z "$dns_type" ] && { cleanup; return; }
+                    fi
+                done
+                read -p "Plugin Name (e.g. dns_dp): " dns_type
+                ;;
+            0) exit 0 ;;
+            *) echo -e "${RED}${TXT_INVALID}${PLAIN}"; exit 1 ;;
+        esac
+        [ -z "$dns_type" ] && exit 1
+        
+        echo -e "${CYAN}${TXT_ISSUE_START}${PLAIN}"
+        local args=("--issue" "--dns" "$dns_type" "-d" "$DOMAIN" "--keylength" "$KEY_LENGTH" "--server" "$CA_SERVER")
+        "$ACME_SH" "${args[@]}"
+        
+        if [ $? -eq 0 ]; then
+            echo -e "${GREEN}${TXT_ISSUE_SUCCESS}${PLAIN}"
+            # Flag for main shell to run install menu
+            echo "SUCCESS_ISSUE" > /tmp/.acme_super_flag
+        else
+            echo -e "${RED}${TXT_ISSUE_FAIL}${PLAIN}"
+        fi
+        
+        # Clean up
+        if [ -f "$ENC_STORE" ]; then
+            _strip_conf
+        fi
+    )
     
-    echo -e "${CYAN}${TXT_ISSUE_START}${PLAIN}"
-    local args=("--issue" "--dns" "$dns_type" "-d" "$DOMAIN" "--keylength" "$KEY_LENGTH" "--server" "$CA_SERVER")
-    "$ACME_SH" "${args[@]}"
-    
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}${TXT_ISSUE_SUCCESS}${PLAIN}"
+    # Check flag from subshell
+    if [ -f /tmp/.acme_super_flag ]; then
+        rm -f /tmp/.acme_super_flag
         install_cert_menu "$DOMAIN"
-    else
-        echo -e "${RED}${TXT_ISSUE_FAIL}${PLAIN}"
-    fi
-    
-    if [ -f "$ENC_STORE" ]; then
-        cleanup
-        _strip_conf
-    else
-        _sanitize_memory
     fi
 }
 
 toggle_security() {
     if [ -f "$ENC_STORE" ]; then
-        if _sec_load; then
+        # Verify logic: Load in subshell to test
+        ( if _sec_load_env; then exit 0; else exit 1; fi )
+        if [ $? -eq 0 ]; then
             rm -f "$ENC_STORE" "$ENC_SIG" "$SEC_KEY"
             crontab -l 2>/dev/null | grep -v "${SCRIPT_NAME} --cron-auto" | crontab -
             "$ACME_SH" --upgrade --auto-upgrade >/dev/null 2>&1
-            cleanup
             echo -e "${RED}${TXT_SEC_OFF}${PLAIN}"
         else
             echo -e "${RED}Decrypt/Integrity failed.${PLAIN}"
@@ -752,6 +743,7 @@ toggle_security() {
     else
         _sec_init
         local dump=""
+        local vars_to_check="CF_Key CF_Email LUA_Key LUA_Email HE_Username HE_Password CLOUDNS_AUTH_ID CLOUDNS_SUB_AUTH_ID CLOUDNS_AUTH_PASSWORD PDNS_Url PDNS_ServerId PDNS_Token PDNS_Ttl One984_Username One984_Password DEDYN_TOKEN DYNV6_TOKEN Ali_Key Ali_Secret DP_Id DP_Key GD_Key GD_Secret AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY LINODE_API_KEY"
         
         if [ -f "$ACME_CONF" ]; then
             while IFS='=' read -r k v; do
@@ -765,7 +757,7 @@ toggle_security() {
             done < "$ACME_CONF"
         fi
 
-        for v in "${SENSITIVE_VARS[@]}"; do
+        for v in $vars_to_check; do
             val="${!v}"
             if [ -n "$val" ]; then
                 dump="${dump}export $v='$val'\n"
@@ -784,7 +776,6 @@ toggle_security() {
             local job="10 3 * * * /bin/bash ${SCRIPT_PATH} --cron-auto"
             (crontab -l 2>/dev/null | grep -v "${SCRIPT_NAME} --cron-auto"; echo "$job") | crontab -
             "$ACME_SH" --upgrade --auto-upgrade 0 >/dev/null 2>&1
-            cleanup
             echo -e "${GREEN}${TXT_SEC_ON}${PLAIN}"
         else
             echo -e "${RED}${TXT_SEC_FAIL}${PLAIN}"
@@ -871,9 +862,11 @@ manage_certs() {
             1)
                 read -p "${TXT_M6_INPUT_RENEW}" d
                 if [ -n "$d" ]; then
-                    [ -f "$ENC_STORE" ] && _sec_load
-                    "$ACME_SH" --renew -d "$d" --force
-                    if [ -f "$ENC_STORE" ]; then cleanup; _strip_conf; fi
+                    (
+                         [ -f "$ENC_STORE" ] && _sec_load_env
+                         "$ACME_SH" --renew -d "$d" --force
+                         [ -f "$ENC_STORE" ] && _strip_conf
+                    )
                 fi
                 ;;
             2)
@@ -901,7 +894,6 @@ uninstall_menu() {
     if [ "$opt" == "1" ]; then
         rm -f "$CONFIG_FILE" "$ENC_STORE" "$ENC_SIG" "$SEC_KEY"
         [ -n "$SHORTCUT_NAME" ] && rm -f "/usr/bin/$SHORTCUT_NAME"
-        cleanup
         echo -e "${GREEN}${TXT_UN_DONE}${PLAIN}"
         exit 0
     elif [ "$opt" == "2" ]; then
@@ -910,7 +902,6 @@ uninstall_menu() {
             [ -f "$ACME_SH" ] && "$ACME_SH" --uninstall
             rm -rf "$ACME_DIR" "$CONFIG_FILE" "$ENC_STORE" "$ENC_SIG" "$SEC_KEY" "$LOG_FILE"
             [ -n "$SHORTCUT_NAME" ] && rm -f "/usr/bin/$SHORTCUT_NAME"
-            cleanup
             crontab -l 2>/dev/null | grep -v "${SCRIPT_NAME} --cron-auto" | crontab -
             echo -e "${GREEN}${TXT_UN_DONE}${PLAIN}"
             [ -f "$0" ] && rm -f "$0"
