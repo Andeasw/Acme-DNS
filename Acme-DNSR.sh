@@ -17,14 +17,12 @@ PLAIN='\033[0m'
 
 DATA_DIR="$HOME/.acme_super_data"
 [ ! -d "$DATA_DIR" ] && mkdir -p "$DATA_DIR"
-
 SCRIPT_PATH=$(readlink -f "$0")
 SCRIPT_NAME=$(basename "$SCRIPT_PATH")
 CONFIG_FILE="$DATA_DIR/config.env"
 ACME_DIR="$HOME/.acme.sh"
 ACME_BIN="$ACME_DIR/acme.sh"
 ACME_CONF="$ACME_DIR/account.conf"
-
 ENC_STORE="$DATA_DIR/.sys_log_cache.db"
 ENC_SIG="$DATA_DIR/.sys_log_cache.idx"
 LOG_FILE="/var/log/acme_super_task.log"
@@ -48,7 +46,9 @@ _ask_input() {
         if [ "$secure" == "-s" ]; then read -s -p "${prompt} " input_val; echo; else read -p "${prompt} " input_val; fi
         if [ -n "$validator" ]; then
             if $validator "$input_val"; then eval "$var_name=\"$input_val\""; break; else echo -e "${RED}Invalid format.${PLAIN}"; fi
-        else eval "$var_name=\"$input_val\""; break; fi
+        else
+            eval "$var_name=\"$input_val\""; break;
+        fi
     done
 }
 
@@ -79,7 +79,8 @@ _calc_hmac() { openssl dgst -sha256 -hmac "$(_x_cal)" "$1" | awk '{print $2}'; }
 
 _sec_save() {
     if [ ! -d "$DATA_DIR" ]; then mkdir -p "$DATA_DIR"; fi
-    local _k=$(_x_cal) tmp_in=$(mktemp)
+    local _k=$(_x_cal)
+    tmp_in=$(mktemp)
     cat > "$tmp_in"
     openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -salt -pass pass:"$_k" -in "$tmp_in" -out "$ENC_STORE"
     local ret=$?
@@ -115,21 +116,13 @@ _valid_domain() { [[ "$1" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-z
 _valid_path() { [[ "$1" == /* ]] && [[ ! "$1" =~ \.\. ]]; }
 _valid_env_val() { [[ "$1" =~ ^[a-zA-Z0-9_.~=+\/@-]+$ ]]; }
 
-_port80_in_use() {
-    local in_use=0
-    _check_cmd ss && ss -tln | grep -qE ":80\s+" && in_use=1
-    if [ $in_use -eq 0 ]; then _check_cmd netstat && netstat -tuln | grep -qE ":80\s+" && in_use=1; fi
-    if [ $in_use -eq 0 ]; then _check_cmd lsof && lsof -i :80 -sTCP:LISTEN >/dev/null 2>&1 && in_use=1; fi
-    return $((1-in_use))
-}
-
 check_dependencies() {
     echo -e "${CYAN}${TXT_CHECK_DEP}${PLAIN}"
     local pm="" install_cmd="" update_cmd=""
     if _check_cmd apt-get; then pm="apt"; install_cmd="apt-get -y -q install"; update_cmd="apt-get -q update"
     elif _check_cmd yum; then pm="yum"; install_cmd="yum -y -q install"; update_cmd="yum -q makecache"
     elif _check_cmd apk; then pm="apk"; install_cmd="apk add --no-cache"; update_cmd="apk update"
-    else echo -e "${RED}Error: Package manager not found.${PLAIN}"; return 1; fi
+    else echo -e "${RED}Error: Package manager not found (apt/yum/apk).${PLAIN}"; return 1; fi
     
     if [ ! -f "$DATA_DIR/.dep_checked" ]; then
         echo -e "${YELLOW}Updating package lists...${PLAIN}"
@@ -154,13 +147,13 @@ check_dependencies() {
     fi
     
     for bin in "${bin_deps[@]}"; do
-        if ! _check_cmd "$bin"; then echo -e "${RED}${TXT_INSTALL_FAIL}Command '$bin' missing.${PLAIN}"; return 1; fi
+        if ! _check_cmd "$bin"; then echo -e "${RED}${TXT_INSTALL_FAIL}Command '$bin' missing. Please install manually.${PLAIN}"; return 1; fi
     done
     
     if _check_cmd systemctl; then
         if ! systemctl is-active --quiet cron && ! systemctl is-active --quiet crond; then
-             systemctl enable cron 2>/dev/null || systemctl enable crond 2>/dev/null
-             systemctl start cron 2>/dev/null || systemctl start crond 2>/dev/null
+            systemctl enable cron 2>/dev/null || systemctl enable crond 2>/dev/null
+            systemctl start cron 2>/dev/null || systemctl start crond 2>/dev/null
         fi
     fi
     return 0
@@ -170,11 +163,11 @@ _cron_logic() {
     if [ -f "$LOCK_FILE" ] && kill -0 "$(cat "$LOCK_FILE")" 2>/dev/null; then exit 0; fi
     echo $$ > "$LOCK_FILE"
     trap 'rm -f "$LOCK_FILE"' EXIT
-    
     if [ ! -f "$ACME_BIN" ]; then _log "CRITICAL: acme.sh binary missing!"; exit 1; fi
+    
     local decrypted=false
     if [ -f "$ENC_STORE" ]; then
-        if _sec_load_to_env; then decrypted=true; else _log "CRITICAL: Decryption failed during cron."; fi
+        if _sec_load_to_env; then decrypted=true; else _log "CRITICAL: Decryption failed during cron task."; fi
     fi
     
     for d in "$ACME_DIR"/*/; do
@@ -182,26 +175,20 @@ _cron_logic() {
         [ "$domain" == "http.header" ] && continue
         cert_file="$d/$domain.cer"; [ ! -f "$cert_file" ] && cert_file="$d/${domain}.cer"
         [ ! -f "$cert_file" ] && continue
-        
         if ! openssl x509 -checkend 864000 -noout -in "$cert_file" >/dev/null 2>&1; then
             _log "Renewing: $domain"
             "$ACME_BIN" --renew -d "$domain" --force >> "$LOG_FILE" 2>&1
-            if [ $? -eq 0 ]; then
-                _log "Success: $domain"
-                [ "$decrypted" = true ] && _strip_conf
-            else
-                _log "Error: Renewal failed for $domain"
-            fi
+            if [ $? -eq 0 ]; then _log "Success: $domain"; [ "$decrypted" = true ] && _strip_conf; else _log "Error: Renewal failed for $domain"; fi
         fi
     done
 }
+
 if [ "$1" == "--cron-auto" ]; then _cron_logic; exit 0; fi
 
 load_config() {
-    if [ -f "$CONFIG_FILE" ]; then source "$CONFIG_FILE"; else
-        CA_SERVER="letsencrypt"; KEY_LENGTH="2048"; USER_EMAIL=""; LANG_SET=""; SHORTCUT_NAME=""
-    fi
+    if [ -f "$CONFIG_FILE" ]; then source "$CONFIG_FILE"; else CA_SERVER="letsencrypt"; KEY_LENGTH="2048"; USER_EMAIL=""; LANG_SET=""; SHORTCUT_NAME=""; fi
 }
+
 save_config() {
     cat > "$CONFIG_FILE" <<EOF
 CA_SERVER="$CA_SERVER"
@@ -224,27 +211,16 @@ setup_shortcut() {
 }
 
 install_acme_sh() {
-    if [ -f "$ACME_BIN" ]; then
-        echo -e "${GREEN}${TXT_ACME_EXIST}${PLAIN}"
-        load_config
-        [ -n "$USER_EMAIL" ] && "$ACME_BIN" --register-account -m "$USER_EMAIL" --output-insecure >/dev/null 2>&1
-        return
-    fi
+    if [ -f "$ACME_BIN" ]; then echo -e "${GREEN}${TXT_ACME_EXIST}${PLAIN}"; load_config; if [ -n "$USER_EMAIL" ]; then "$ACME_BIN" --register-account -m "$USER_EMAIL" --output-insecure >/dev/null 2>&1; fi; return; fi
     echo -e "${CYAN}${TXT_ACME_INSTALLING}${PLAIN}"
     while [[ ! "$USER_EMAIL" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; do read -p "${TXT_INPUT_EMAIL}" USER_EMAIL; done
-    
     local install_success=false
-    if curl -k -s https://get.acme.sh | sh -s email="$USER_EMAIL"; then install_success=true;
+    if curl -k -s https://get.acme.sh | sh -s email="$USER_EMAIL"; then install_success=true
     elif _check_cmd git; then
         echo -e "${YELLOW}Curl failed, trying Git...${PLAIN}"
-        rm -rf ~/.acme.sh
-        git clone https://github.com/acmesh-official/acme.sh.git ~/.acme.sh
-        cd ~/.acme.sh || return 1
-        ./acme.sh --install -m "$USER_EMAIL"
-        cd ..
-        install_success=true
+        rm -rf ~/.acme.sh; git clone https://github.com/acmesh-official/acme.sh.git ~/.acme.sh
+        cd ~/.acme.sh || return 1; ./acme.sh --install -m "$USER_EMAIL"; cd ..; install_success=true
     fi
-    
     if [ "$install_success" = false ] || [ ! -f "$ACME_BIN" ]; then echo -e "${RED}Error: acme.sh install failed.${PLAIN}"; return 1; fi
     load_config; save_config
     echo -e "${YELLOW}>>> ${TXT_ACC_SYNC}${PLAIN}"
@@ -256,7 +232,12 @@ install_acme_sh() {
     echo -e "${GREEN}${TXT_INIT_SUCCESS}${PLAIN}"
 }
 
-_post_issue_install() { echo -e "${GREEN}${TXT_ISSUE_SUCCESS}${PLAIN}"; install_cert_menu "$1"; }
+_post_issue_install() {
+    local domain=$1
+    echo -e "${GREEN}${TXT_ISSUE_SUCCESS}${PLAIN}"
+    install_cert_menu "$domain"
+}
+
 _post_issue_cleanup() { [ -f "$ENC_STORE" ] && _strip_conf; }
 
 install_cert_menu() {
@@ -289,16 +270,34 @@ issue_http() {
     if ! [[ "$MODE" =~ ^[1-4]$ ]]; then echo -e "${RED}${TXT_INVALID}${PLAIN}"; return; fi
     local MODE_ARGS=("" "--standalone" "--nginx" "--apache" "--webroot")
     local extra_arg=""
+    
     if [ "$MODE" == "1" ]; then
-        if _port80_in_use; then
-            echo -e "${RED}${TXT_PORT_80_WARN}${PLAIN}"
-            read -p "${TXT_CONTINUE_ASK} (y/n): " force_continue
-            [[ "$force_continue" != "y" ]] && return
+        local v4_busy=0
+        local v6_busy=0
+        if _check_cmd ss; then
+            ss -tln4 | grep -qE ":80\s+" && v4_busy=1
+            ss -tln6 | grep -qE ":80\s+" && v6_busy=1
+        elif _check_cmd netstat; then
+            netstat -tuln4 | grep -qE ":80\s+" && v4_busy=1
+            netstat -tuln6 | grep -qE ":80\s+" && v6_busy=1
+        elif _check_cmd lsof; then
+            lsof -i4:80 -sTCP:LISTEN >/dev/null 2>&1 && v4_busy=1
+            lsof -i6:80 -sTCP:LISTEN >/dev/null 2>&1 && v6_busy=1
         fi
+        
+        if [ $v4_busy -eq 1 ] || [ $v6_busy -eq 1 ]; then
+            echo -e "${RED}${TXT_PORT_80_WARN}${PLAIN}"
+            [ $v4_busy -eq 1 ] && echo -e "${YELLOW}- IPv4 Port 80 is occupied.${PLAIN}"
+            [ $v6_busy -eq 1 ] && echo -e "${YELLOW}- IPv6 Port 80 is occupied.${PLAIN}"
+            read -p "${TXT_FORCE_CONTINUE} (y/n): " force_c
+            if [ "$force_c" != "y" ]; then return; fi
+        fi
+        
     elif [ "$MODE" == "4" ]; then
         _ask_input extra_arg "${TXT_INPUT_WEBROOT}" "_valid_path"
         [ ! -d "$extra_arg" ] && echo -e "${RED}Dir not found.${PLAIN}" && return
     fi
+    
     local args=("--issue" "-d" "$DOMAIN" "--keylength" "$KEY_LENGTH" "--server" "$CA_SERVER" "${MODE_ARGS[$MODE]}")
     [ -n "$extra_arg" ] && args+=("$extra_arg")
     echo -e "${CYAN}${TXT_ISSUE_START}${PLAIN}"
@@ -354,9 +353,7 @@ toggle_security() {
         fi
     else
         local dump="" keys="CF_Key CF_Email LUA_Key LUA_Email HE_Username HE_Password CLOUDNS_AUTH_ID CLOUDNS_SUB_AUTH_ID CLOUDNS_AUTH_PASSWORD PDNS_Url PDNS_ServerId PDNS_Token PDNS_Ttl One984_Username One984_Password DEDYN_TOKEN DYNV6_TOKEN Ali_Key Ali_Secret DP_Id DP_Key GD_Key GD_Secret AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY LINODE_API_KEY"
-        [ -f "$ACME_CONF" ] && while IFS='=' read -r k v; do
-            [[ $k == SAVED_* ]] && _valid_env_val "${v//[\'\"]/}" && dump="${dump}export ${k#SAVED_}='${v//[\'\"]/}'\n"
-        done < "$ACME_CONF"
+        [ -f "$ACME_CONF" ] && while IFS='=' read -r k v; do [[ $k == SAVED_* ]] && _valid_env_val "${v//[\'\"]/}" && dump="${dump}export ${k#SAVED_}='${v//[\'\"]/}'\n"; done < "$ACME_CONF"
         for v in $keys; do [ -n "${!v}" ] && dump="${dump}export $v='${!v}'\n"; done
         [ -z "$dump" ] && echo -e "${YELLOW}${TXT_SEC_NO_KEYS}${PLAIN}" && return
         echo -e "$dump" | _sec_save
@@ -420,7 +417,7 @@ uninstall_menu() {
 
 load_language_strings() {
     if [ "$LANG_SET" == "en" ]; then
-        TXT_TITLE="Acme-DNS-Super V0.0.1 | Secure Cert Manager"
+        TXT_TITLE="Acme-DNS-Super V0.0.2 | Secure Cert Manager"
         TXT_STATUS_LABEL="Status"; TXT_SEC_LABEL="Security"; TXT_EMAIL_LABEL="Email"; TXT_NOT_SET="Not Set"
         TXT_HINT_INSTALL=">> Warning: acme.sh is NOT installed. Please run [1] first. <<"
         TXT_M_1="Init Environment (Install, Register & Shortcut)"
@@ -444,18 +441,17 @@ load_language_strings() {
         TXT_INPUT_EMAIL="Enter Email: "; TXT_EMAIL_INVALID="Invalid Email!"; TXT_ACC_SYNC="Syncing Accounts..."; TXT_INIT_SUCCESS="Done!"
         TXT_WARN_NO_INIT="Please initialize environment first!"; TXT_INPUT_DOMAIN="Enter Domain: "; TXT_DOMAIN_EMPTY="Invalid Domain Format."
         TXT_HTTP_MODE_SEL="Select Validation Mode:"; TXT_HTTP_STANDALONE="1. Standalone"; TXT_HTTP_NGINX="2. Nginx"; TXT_HTTP_APACHE="3. Apache"; TXT_HTTP_WEBROOT="4. Webroot"
-        TXT_INPUT_WEBROOT="Enter Webroot Path: "; TXT_PORT_80_WARN="Warning: Port 80 is used (IPv4/6). Standalone might fail."
-        TXT_CONTINUE_ASK="Force continue?"
+        TXT_INPUT_WEBROOT="Enter Webroot Path: "; TXT_PORT_80_WARN="Warning: Port 80 usage detected."
+        TXT_FORCE_CONTINUE="Do you want to force proceed?"
         TXT_ISSUE_START="Starting..."; TXT_ISSUE_SUCCESS="Success! Proceeding to installation..."; TXT_ISSUE_FAIL="Failed."
         TXT_DNS_SEL="Select DNS Provider:"; TXT_DNS_MANUAL="Manual Input (ENV)"; TXT_DNS_KEY="API Key (Hidden): "; TXT_DNS_EMAIL="Account Email: "
         TXT_INS_TITLE="Install Cert to Service"; TXT_INS_DESC="Sets up deployment hook for auto-renewal."
         TXT_INS_DOMAIN="Enter Domain: "; TXT_INS_CERT_PATH="Cert Path: "; TXT_INS_KEY_PATH="Key Path: "; TXT_INS_CA_PATH="CA Path: "; TXT_INS_RELOAD="Reload Cmd: "
         TXT_INS_SUCCESS="Installed! Hook saved."; TXT_SET_UPDATED="Updated."; TXT_UN_DONE="Uninstalled."
         TXT_SEC_ON="Encryption ENABLED. Cron set to 03:20."; TXT_SEC_OFF="Encryption DISABLED. Cron restored."
-        TXT_SEC_FAIL="Encryption Failed."; TXT_SEC_NO_KEYS="No keys found to encrypt."; TXT_ERR_ENV="Invalid ENV format."
-        TXT_ERR_PATH="Invalid Path."
+        TXT_SEC_FAIL="Encryption Failed."; TXT_SEC_NO_KEYS="No keys found to encrypt."; TXT_ERR_ENV="Invalid ENV format."; TXT_ERR_PATH="Invalid Path."
     else
-        TXT_TITLE="Acme-DNS-Super V0.0.1 | 证书管理大师"
+        TXT_TITLE="Acme-DNS-Super V0.0.2 | 证书管理大师"
         TXT_STATUS_LABEL="状态"; TXT_SEC_LABEL="安全模式"; TXT_EMAIL_LABEL="邮箱"; TXT_NOT_SET="未设置"
         TXT_HINT_INSTALL=">> 警告：未安装 acme.sh，请先执行 [1] <<"
         TXT_M_1="环境初始化 (安装、注册、快捷键)"
@@ -474,8 +470,8 @@ load_language_strings() {
         TXT_ACC_SYNC="同步账户中..."; TXT_INIT_SUCCESS="初始化完成！"; TXT_WARN_NO_INIT="请先初始化！"
         TXT_INPUT_DOMAIN="请输入域名: "; TXT_DOMAIN_EMPTY="域名格式无效 (仅允许: a-z0-9.-)。"
         TXT_HTTP_MODE_SEL="选择模式:"; TXT_HTTP_STANDALONE="1. Standalone"; TXT_HTTP_NGINX="2. Nginx"; TXT_HTTP_APACHE="3. Apache"; TXT_HTTP_WEBROOT="4. Webroot"
-        TXT_INPUT_WEBROOT="输入根目录: "; TXT_PORT_80_WARN="警告: 检测到80端口被占用(IPv4/6)。Standalone模式可能失败。"
-        TXT_CONTINUE_ASK="是否强制继续?"
+        TXT_INPUT_WEBROOT="输入根目录: "; TXT_PORT_80_WARN="警告: 检测到端口80被占用。"
+        TXT_FORCE_CONTINUE="是否强制继续申请?"
         TXT_ISSUE_START="开始签发..."; TXT_ISSUE_SUCCESS="签发成功！即将进入部署流程..."; TXT_ISSUE_FAIL="签发失败。"
         TXT_DNS_SEL="选择DNS服务商:"; TXT_DNS_MANUAL="手动输入 (ENV)"; TXT_DNS_KEY="API Key (隐藏输入): "; TXT_DNS_EMAIL="Account Email: "
         TXT_INS_TITLE="部署证书到服务"; TXT_INS_DESC="此操作将设置安装路径和重载命令，并永久保存用于自动续期。"
@@ -486,9 +482,18 @@ load_language_strings() {
     fi
 }
 
+select_language_first() {
+    if [ -z "$LANG_SET" ]; then
+        clear; echo -e "1. 中文\n2. English"
+        read -p "Select [1-2]: " lang_opt
+        [ "$lang_opt" == "2" ] && LANG_SET="en" || LANG_SET="cn"; save_config
+    fi
+    load_language_strings
+}
+
 show_menu() {
     clear
-    echo -e "${BLUE}==============================================================${PLAIN}\n${BLUE}           ${TXT_TITLE}           ${PLAIN}\n${BLUE}==============================================================${PLAIN}"
+    echo -e "${BLUE}==============================================================${PLAIN}\n${BLUE}   ${TXT_TITLE}   ${PLAIN}\n${BLUE}==============================================================${PLAIN}"
     echo -e "${TXT_STATUS_LABEL}: CA: ${GREEN}${CA_SERVER}${PLAIN} | Key: ${GREEN}${KEY_LENGTH}${PLAIN} | ${TXT_EMAIL_LABEL}: ${GREEN}${USER_EMAIL:-${TXT_NOT_SET}}${PLAIN}"
     echo -e "${BLUE}--------------------------------------------------------------${PLAIN}"
     [ ! -f "$ACME_BIN" ] && echo -e "${RED}${TXT_HINT_INSTALL}${PLAIN}"
